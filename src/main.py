@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 
 from telegram import Bot
 
@@ -58,14 +59,17 @@ async def run_site_loop(
         if not await db.get_site_enabled(site_key):
             await asyncio.sleep(interval)
             continue
+        now = datetime.now(timezone.utc).isoformat()
         try:
             await sync_site(db, notifier, crawler, chat_id, config.crawl)
+            await db.record_crawl_success(site_key, now)
             if failures.record_success(site_key):
                 await notifier.send_alert(
                     config.telegram.admin_chat_id, f"✅ [{site_label}] 크롤링 복구됨"
                 )
-        except Exception:
+        except Exception as e:
             logger.exception("[%s] crawl cycle failed", site_key)
+            await db.record_crawl_failure(site_key, now, f"{type(e).__name__}: {e}")
             if failures.record_failure(site_key):
                 await notifier.send_alert(
                     config.telegram.admin_chat_id,

@@ -12,6 +12,7 @@ from .registry import register_crawler
 BASE_URL = "https://quasarzone.com"
 LIST_URL = BASE_URL + "/bbs/qb_saleinfo?page={page}"
 ARTICLE_RE = re.compile(r"/bbs/([\w\d_]+)/views/(\d+)")
+NOT_FOUND_MARKER = "글이 존재하지 않습니다"
 
 
 @register_crawler("quasarzone")
@@ -26,11 +27,16 @@ class QuasarzoneCrawler(BaseCrawler):
         return articles
 
     async def check_exists(self, article_url: str) -> bool:
+        # 삭제된 글도 HTTP 200을 반환하며 JS alert에 "글이 존재하지 않습니다" 문구를
+        # 담아 보여준다. Cloudflare 우회가 일시적으로 실패하는 경우(403 등)를 삭제로
+        # 오판하지 않도록 이 마커 문구나 404가 있을 때만 확정 삭제로 본다.
         try:
-            status, _ = await cf_get(article_url)
+            status, body = await cf_get(article_url)
         except Exception:
             return True
-        return status == 200
+        if status == 404:
+            return False
+        return NOT_FOUND_MARKER not in body
 
 
 def _parse_listing(html: str) -> list[Article]:
@@ -75,7 +81,14 @@ def _parse_listing(html: str) -> list[Article]:
         category = category_tag.get_text(strip=True) if category_tag else None
 
         thumb = row.select_one(".thumb-wrap img")
-        thumbnail_url = thumb.get("src") if thumb and thumb.get("src") else None
+        thumbnail_url = None
+        if thumb and thumb.get("src"):
+            # 파일명의 'thumb_' 접두사를 떼면 같은 CDN에서 원본 화질 이미지를 받을 수 있다.
+            src = thumb["src"]
+            filename = src.rsplit("/", 1)[-1]
+            if filename.startswith("thumb_"):
+                src = src[: -len(filename)] + filename[len("thumb_") :]
+            thumbnail_url = src
 
         articles.append(
             Article(

@@ -33,8 +33,11 @@ class RuliwebCrawler(BaseCrawler):
                 async with session.get(
                     article_url, timeout=aiohttp.ClientTimeout(total=10)
                 ) as resp:
-                    if resp.status != 200:
+                    # 일시적 오류(5xx, 429 등)를 삭제로 오판하지 않도록 404만 확정 삭제로 본다.
+                    if resp.status == 404:
                         return False
+                    if resp.status != 200:
+                        return True
                     html = await resp.text(errors="replace")
         except Exception:
             return True

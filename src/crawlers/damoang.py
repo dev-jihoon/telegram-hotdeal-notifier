@@ -28,11 +28,13 @@ class DamoangCrawler(BaseCrawler):
         return articles
 
     async def check_exists(self, article_url: str) -> bool:
+        # Cloudflare 우회가 일시적으로 실패하는 경우(403 등)를 삭제로 오판하지 않도록
+        # 404만 확정 삭제로 본다.
         try:
             status, _ = await cf_get(article_url)
         except Exception:
             return True
-        return status == 200
+        return status != 404
 
 
 def _parse_listing(html: str) -> list[Article]:

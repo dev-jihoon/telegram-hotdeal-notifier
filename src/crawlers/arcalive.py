@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -65,6 +66,7 @@ def _parse_listing(html: str) -> list[Article]:
         if thumb_tag and thumb_tag.get("src"):
             src = thumb_tag["src"]
             thumbnail_url = f"https:{src}" if src.startswith("//") else src
+            thumbnail_url = _drop_list_size(thumbnail_url)
 
         category_tag = row.select_one(".badge")
         category = category_tag.get_text(strip=True) if category_tag else None
@@ -84,3 +86,10 @@ def _parse_listing(html: str) -> list[Article]:
         )
 
     return articles
+
+
+def _drop_list_size(url: str) -> str:
+    """썸네일 CDN URL의 'type=list'(저화질 목록용) 파라미터를 제거해 원본 화질을 받는다."""
+    parts = urlsplit(url)
+    query = "&".join(p for p in parts.query.split("&") if not p.startswith("type="))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))

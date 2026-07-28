@@ -61,12 +61,18 @@ def _parse_listing(html: str) -> list[Article]:
         classes = title_a.get("class", [])
         status = ArticleStatus.ENDED if any("end" in c for c in classes) else ArticleStatus.ACTIVE
 
-        thumb_img = row.select_one("a.baseList-thumb img")
         thumbnail_url = None
-        if thumb_img and thumb_img.get("src"):
-            src = thumb_img["src"]
-            if "noimage" not in src:
-                thumbnail_url = urljoin("https://cdn3.ppomppu.co.kr", src)
+        thumb_a = row.select_one("a.baseList-thumb")
+        if thumb_a:
+            # tooltip 속성에 원본 이미지(P_img://...)가 들어있어, 목록용 저화질
+            # small_*.jpg 썸네일보다 훨씬 화질이 좋다. 없으면 저화질로 대체한다.
+            tooltip = thumb_a.get("tooltip", "")
+            if tooltip.startswith("P_img://"):
+                thumbnail_url = "https://" + tooltip[len("P_img://") :]
+            else:
+                thumb_img = thumb_a.select_one("img")
+                if thumb_img and thumb_img.get("src") and "noimage" not in thumb_img["src"]:
+                    thumbnail_url = urljoin("https://cdn3.ppomppu.co.kr", thumb_img["src"])
 
         rec_td = row.select_one("td.baseList-rec")
         likes = None

@@ -31,15 +31,16 @@ class BaseCrawler(abc.ABC):
     async def check_exists(self, article_url: str) -> bool:
         """글이 아직 존재하는지 확인한다 (목록에서 사라진 글의 삭제 여부 판단용).
 
-        기본 구현은 HTTP 200이면 존재한다고 판단한다. 삭제 페이지가 200으로
-        응답하며 별도 마커 텍스트를 보여주는 사이트는 이 메서드를 오버라이드한다.
-        네트워크 오류 시에는 오탐(잘못된 삭제 처리)을 피하기 위해 존재한다고 가정한다.
+        기본 구현은 명확한 404만 "삭제됨"으로 판단한다. 그 외 응답(5xx, 429 등
+        일시적 오류 포함)이나 네트워크 오류는 오탐(잘못된 삭제 처리)을 피하기 위해
+        존재한다고 가정한다 - 삭제 페이지가 200으로 응답하며 별도 마커 텍스트를
+        보여주는 사이트는 이 메서드를 오버라이드한다.
         """
         try:
             async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
                 async with session.get(
                     article_url, timeout=aiohttp.ClientTimeout(total=10)
                 ) as resp:
-                    return resp.status == 200
+                    return resp.status != 404
         except Exception:
             return True
