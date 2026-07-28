@@ -93,8 +93,14 @@ def format_message(article: Article, previous_price: str | None = None) -> str:
     return text
 
 
-def build_markup(article: Article) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("바로가기", url=article.url)]])
+def build_markup(article: Article, webapp_link: str | None = None) -> InlineKeyboardMarkup:
+    buttons = [InlineKeyboardButton("바로가기", url=article.url)]
+    if webapp_link:
+        # 채널/그룹 인라인 버튼은 텔레그램 정책상 web_app 타입을 못 쓰므로, BotFather에
+        # 등록한 Mini App 짧은 이름으로 만든 t.me 딥링크(일반 url 버튼)를 사용한다.
+        # 이 링크는 텔레그램 클라이언트가 특별 처리해서 진짜 미니앱으로 열어준다.
+        buttons.append(InlineKeyboardButton("🔥 인기 핫딜", url=webapp_link))
+    return InlineKeyboardMarkup([buttons])
 
 
 async def _with_flood_retry(func: Callable[[], Awaitable[T]], max_retries: int = 5) -> T:
@@ -110,14 +116,15 @@ async def _with_flood_retry(func: Callable[[], Awaitable[T]], max_retries: int =
 
 
 class TelegramNotifier:
-    def __init__(self, bot: Bot):
+    def __init__(self, bot: Bot, webapp_link: str | None = None):
         self._bot = bot
         self._limiter = RateLimiter()
+        self._webapp_link = webapp_link
 
     async def send(self, article: Article, chat_id: int) -> tuple[int, bool]:
         """새 글을 전송하고 (message_id, has_photo)를 반환한다."""
         text = format_message(article)
-        markup = build_markup(article)
+        markup = build_markup(article, self._webapp_link)
         await self._limiter.wait(chat_id)
 
         if article.thumbnail_url:
@@ -156,7 +163,7 @@ class TelegramNotifier:
         previous_price: str | None = None,
     ) -> None:
         text = format_message(article, previous_price=previous_price)
-        markup = build_markup(article)
+        markup = build_markup(article, self._webapp_link)
         await self._limiter.wait(chat_id)
 
         try:
@@ -201,15 +208,15 @@ class TelegramNotifier:
         await self._limiter.wait(chat_id)
         await _with_flood_retry(lambda: self._bot.send_message(chat_id=chat_id, text=text))
 
-    async def send_digest_text(self, chat_id: int, text: str, webapp_url: str | None = None) -> None:
+    async def send_digest_text(self, chat_id: int, text: str) -> None:
         """다이제스트 요약 텍스트를 전송한다.
 
         web_app 인라인 버튼은 텔레그램 정책상 1:1 채팅에서만 허용되고 채널/그룹에서는
-        거부되므로, 채널 방송용으로는 일반 URL 버튼을 사용한다.
+        거부되므로, 채널 방송용으로는 일반 URL 버튼(t.me 딥링크 또는 그냥 https 링크)을 쓴다.
         """
         markup = None
-        if webapp_url:
-            markup = InlineKeyboardMarkup([[InlineKeyboardButton("📱 웹에서 더보기", url=webapp_url)]])
+        if self._webapp_link:
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton("📱 웹에서 더보기", url=self._webapp_link)]])
 
         await self._limiter.wait(chat_id)
         await _with_flood_retry(

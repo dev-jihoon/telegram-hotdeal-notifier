@@ -49,6 +49,7 @@ class WebappConfig:
     enabled: bool = False
     port: int = 8080
     public_url: str | None = None
+    short_name: str | None = None
 
 
 @dataclass

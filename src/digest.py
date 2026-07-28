@@ -34,13 +34,7 @@ def _build_summary_text(articles: list, mall_counts: dict[str, int]) -> str:
     return "\n".join(lines).strip()
 
 
-async def send_digest(
-    db: Database,
-    notifier: TelegramNotifier,
-    chat_id: int,
-    top_n: int,
-    webapp_url: str | None = None,
-) -> None:
+async def send_digest(db: Database, notifier: TelegramNotifier, chat_id: int, top_n: int) -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     articles = await db.get_top_articles_since(cutoff, top_n)
     if not articles:
@@ -50,5 +44,5 @@ async def send_digest(
     mall_counts = await db.get_mall_counts_since(cutoff)
 
     text = _build_summary_text(articles, mall_counts)
-    await notifier.send_digest_text(chat_id, text, webapp_url=webapp_url)
+    await notifier.send_digest_text(chat_id, text)
     logger.info("digest sent with %d articles", len(articles))

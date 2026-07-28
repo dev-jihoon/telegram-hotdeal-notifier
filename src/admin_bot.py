@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from .db import Database
@@ -46,6 +46,12 @@ class AdminBot:
         self._app.add_handler(CallbackQueryHandler(self._on_refresh_status, pattern=f"^{REFRESH_STATUS}$"))
 
     def _is_admin(self, update: Update) -> bool:
+        # 콜백쿼리는 버튼이 달린 "메시지가 있는 채팅"이 아니라 실제로 누른 사람(from_user)을
+        # 기준으로 판단해야 한다 - 메시지 자체는 항상 admin_chat_id의 1:1 대화에서만
+        # 생성되지만, 신원 확인은 클릭한 사람 기준으로 하는 게 더 안전하다.
+        if update.callback_query is not None:
+            user = update.callback_query.from_user
+            return user is not None and user.id == self._admin_chat_id
         chat = update.effective_chat
         return chat is not None and chat.id == self._admin_chat_id
 
@@ -55,9 +61,10 @@ class AdminBot:
         if not self._is_admin(update):
             return
         text = (
-            "핫딜 알림 봇 관리자 메뉴입니다.\n\n"
-            "/sites - 사이트별 크롤링 켜기/끄기\n"
-            "/status - 사이트별 현황 (추적 글 수, 마지막 성공/실패)"
+            "👋 핫딜 알림 봇 관리자 메뉴예요.\n\n"
+            "/sites — 사이트별 크롤링 켜고 끄기\n"
+            "/status — 실시간 현황 (추적 글 수, 마지막 성공/실패)\n\n"
+            "메시지창에 '/'만 입력해도 명령어 목록이 바로 뜹니다."
         )
         await update.message.reply_text(text)
 
@@ -71,7 +78,7 @@ class AdminBot:
             icon = "✅" if info["enabled"] else "⛔"
             label = f"{icon} {SITE_LABELS.get(key, key)} ({info['tracked']})"
             buttons.append([InlineKeyboardButton(label, callback_data=f"{TOGGLE_PREFIX}{key}")])
-        text = "사이트별 크롤링 on/off (괄호는 추적 중인 글 수). 누르면 전환됩니다:"
+        text = "🔧 사이트 관리\n켜고 싶은 사이트를 눌러주세요. 괄호 안 숫자는 현재 추적 중인 글 개수예요."
         return text, InlineKeyboardMarkup(buttons)
 
     async def _cmd_sites(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -100,7 +107,7 @@ class AdminBot:
 
     async def _build_status_text(self) -> str:
         report = await self._db.get_site_report(self._site_keys)
-        lines = ["📊 사이트별 현황\n"]
+        lines = ["📊 실시간 현황\n"]
         for key in self._site_keys:
             info = report[key]
             site_label = SITE_LABELS.get(key, key)
@@ -111,13 +118,13 @@ class AdminBot:
                 continue
 
             if info["last_error"]:
-                status_line = f"⚠️ 실패 ({_relative_time(info['last_crawl_at'])}): {info['last_error'][:60]}"
+                status_line = f"⚠️ 실패 ({_relative_time(info['last_crawl_at'])}) · {info['last_error'][:60]}"
             elif not info["bootstrapped"]:
                 status_line = "⏳ 초기 수집 중"
             else:
-                status_line = f"정상, 마지막 성공 {_relative_time(info['last_success_at'])}"
+                status_line = f"🟢 정상 · {_relative_time(info['last_success_at'])} 성공"
 
-            lines.append(f"{icon} {site_label} — 추적 {info['tracked']}개 | {status_line}")
+            lines.append(f"{icon} {site_label} — 추적 {info['tracked']}개 · {status_line}")
 
         return "\n".join(lines)
 
@@ -148,6 +155,17 @@ class AdminBot:
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling()
+
+        # 관리자 채팅에서만 '/'를 입력했을 때 명령어 목록이 뜨도록 스코프를 좁혀서 등록한다
+        # (전역으로 등록하면 다른 사용자에게도 명령어 목록이 노출된다).
+        commands = [
+            BotCommand("start", "관리자 메뉴 안내"),
+            BotCommand("sites", "사이트별 크롤링 켜기/끄기"),
+            BotCommand("status", "실시간 현황 보기"),
+        ]
+        await self._app.bot.set_my_commands(
+            commands, scope=BotCommandScopeChat(chat_id=self._admin_chat_id)
+        )
         logger.info("Admin bot polling started (/start, /sites, /status available to admin_chat_id)")
 
     async def stop(self) -> None:

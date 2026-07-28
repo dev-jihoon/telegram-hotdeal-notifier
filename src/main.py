@@ -107,14 +107,13 @@ async def run_digest_loop(
     hour: int,
     minute: int,
     top_n: int,
-    webapp_url: str | None,
 ) -> None:
     while True:
         wait_seconds = _seconds_until_next(hour, minute)
         logger.info("digest scheduled in %.0f minutes", wait_seconds / 60)
         await asyncio.sleep(wait_seconds)
         try:
-            await send_digest(db, notifier, chat_id, top_n, webapp_url=webapp_url)
+            await send_digest(db, notifier, chat_id, top_n)
         except Exception:
             logger.exception("digest send failed")
         await asyncio.sleep(60)  # 같은 분 안에서 즉시 재실행되는 것 방지
@@ -128,7 +127,18 @@ async def async_main(config_path: str) -> None:
     await db.seed_site_state({key: site.enabled for key, site in config.sites.items()})
 
     bot = Bot(token=config.telegram.bot_token)
-    notifier = TelegramNotifier(bot)
+
+    # 채널/그룹 메시지에 붙일 미니앱 버튼 링크를 미리 계산해둔다.
+    # BotFather에 Mini App 짧은 이름(short_name)을 등록했으면 t.me 딥링크를 쓰고
+    # (진짜 미니앱으로 열림), 아니면 그냥 public_url을 일반 링크로 사용한다.
+    channel_webapp_link: str | None = None
+    if config.webapp.enabled and config.webapp.short_name:
+        me = await bot.get_me()
+        channel_webapp_link = f"https://t.me/{me.username}/{config.webapp.short_name}"
+    elif config.webapp.enabled and config.webapp.public_url:
+        channel_webapp_link = config.webapp.public_url
+
+    notifier = TelegramNotifier(bot, webapp_link=channel_webapp_link)
 
     crawlers = load_all_crawlers(config)
     failures = FailureTracker(
@@ -147,6 +157,8 @@ async def async_main(config_path: str) -> None:
     if config.webapp.enabled:
         webapp_runner = await start_webapp(db, config.telegram.bot_token, config.webapp.port)
         if config.webapp.public_url:
+            # 메뉴 버튼(채팅창 왼쪽 아래)은 1:1 대화 전용 web_app 타입이라 항상 public_url을
+            # 직접 써야 한다 (t.me 딥링크가 아니라).
             await bot.set_chat_menu_button(
                 menu_button=MenuButtonWebApp(
                     text="🔥 인기 핫딜",
@@ -168,7 +180,6 @@ async def async_main(config_path: str) -> None:
                 run_digest_loop(
                     db, notifier, digest_chat_id,
                     config.digest.hour, config.digest.minute, config.digest.top_n,
-                    config.webapp.public_url if config.webapp.enabled else None,
                 )
             )
         )
