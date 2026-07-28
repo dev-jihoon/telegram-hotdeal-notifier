@@ -61,6 +61,12 @@ def _parse_listing(html: str) -> list[Article]:
         price_tag = row.select_one(".deal-price")
         price = price_tag.get_text(strip=True) if price_tag else None
 
+        delivery_tag = row.select_one(".deal-delivery")
+        delivery = delivery_tag.get_text(strip=True) if delivery_tag else None
+
+        mall_tag = row.select_one(".deal-store")
+        mall = mall_tag.get_text(strip=True) if mall_tag else None
+
         thumb_tag = row.select_one(".vrow-preview img")
         thumbnail_url = None
         if thumb_tag and thumb_tag.get("src"):
@@ -81,6 +87,8 @@ def _parse_listing(html: str) -> list[Article]:
                 likes=likes,
                 thumbnail_url=thumbnail_url,
                 category=category,
+                mall=mall,
+                delivery=delivery,
                 status=status,
             )
         )

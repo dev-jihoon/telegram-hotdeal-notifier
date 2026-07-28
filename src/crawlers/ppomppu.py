@@ -6,7 +6,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from ..models import Article, ArticleStatus
-from ..price import extract_price
+from ..price import extract_mall, extract_price
 from .base import DEFAULT_HEADERS, BaseCrawler
 from .registry import register_crawler
 
@@ -95,6 +95,7 @@ def _parse_listing(html: str) -> list[Article]:
                 likes=likes,
                 thumbnail_url=thumbnail_url,
                 category=category or None,
+                mall=extract_mall(title),
                 status=status,
             )
         )

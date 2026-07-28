@@ -13,6 +13,19 @@ crawl:
   failure_alert_threshold: 3         # 이 횟수만큼 연속 실패하면 admin_chat_id로 알림
   failure_realert_every: 30          # 알림 이후에도 계속 실패하면 이 횟수마다 재알림
 
+digest:
+  enabled: false                     # true로 켜면 매일 정해진 시각에 인기 핫딜 요약을 보냅니다
+  hour: 9                            # 전송 시각 (KST, 24시간제)
+  minute: 0
+  top_n: 5                           # 추천수 상위 몇 개를 보여줄지
+  # chat_id: -1009999999999          # 다이제스트를 다른 채널로 보내고 싶을 때 (선택, 기본 default_chat_id)
+
+webapp:
+  enabled: false                     # true로 켜면 "오늘의 인기 핫딜" 텔레그램 미니앱을 제공합니다
+  port: 8080                         # 컨테이너 내부에서 미니앱 웹서버가 열리는 포트
+  # public_url: "https://hotdeal.example.com"  # nginx 등으로 위 포트를 프록시한 HTTPS 주소.
+  # 비워두면 미니앱 서버는 뜨지만 봇 메뉴 버튼은 연결되지 않습니다 (텔레그램은 HTTPS만 허용).
+
 sites:
   ppomppu:
     enabled: true

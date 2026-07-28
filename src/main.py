@@ -3,16 +3,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from telegram import Bot
+from telegram import Bot, MenuButtonWebApp, WebAppInfo
 
 from .admin_bot import AdminBot
 from .config import Config, load_config
 from .crawlers import load_all_crawlers
 from .db import Database
+from .digest import send_digest
 from .sync import purge_expired, sync_site
 from .telegram_notifier import SITE_LABELS, TelegramNotifier
+from .webapp import start_webapp
+
+KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -87,6 +92,34 @@ async def run_retention_loop(db: Database, retention_days: int) -> None:
             logger.exception("retention cleanup failed")
 
 
+def _seconds_until_next(hour: int, minute: int) -> float:
+    now = datetime.now(KST)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+async def run_digest_loop(
+    db: Database,
+    notifier: TelegramNotifier,
+    chat_id: int,
+    hour: int,
+    minute: int,
+    top_n: int,
+    webapp_url: str | None,
+) -> None:
+    while True:
+        wait_seconds = _seconds_until_next(hour, minute)
+        logger.info("digest scheduled in %.0f minutes", wait_seconds / 60)
+        await asyncio.sleep(wait_seconds)
+        try:
+            await send_digest(db, notifier, chat_id, top_n, webapp_url=webapp_url)
+        except Exception:
+            logger.exception("digest send failed")
+        await asyncio.sleep(60)  # 같은 분 안에서 즉시 재실행되는 것 방지
+
+
 async def async_main(config_path: str) -> None:
     config = load_config(config_path)
 
@@ -110,7 +143,40 @@ async def async_main(config_path: str) -> None:
     )
     await admin_bot.start()
 
+    webapp_runner = None
+    if config.webapp.enabled:
+        webapp_runner = await start_webapp(db, config.telegram.bot_token, config.webapp.port)
+        if config.webapp.public_url:
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="🔥 인기 핫딜",
+                    web_app=WebAppInfo(url=config.webapp.public_url),
+                )
+            )
+            logger.info("Set persistent menu button to mini app: %s", config.webapp.public_url)
+        else:
+            logger.warning(
+                "webapp.enabled=true but webapp.public_url is not set - menu button skipped"
+            )
+
     tasks = [asyncio.create_task(run_retention_loop(db, config.crawl.retention_days))]
+
+    if config.digest.enabled:
+        digest_chat_id = config.digest.chat_id or config.telegram.default_chat_id
+        tasks.append(
+            asyncio.create_task(
+                run_digest_loop(
+                    db, notifier, digest_chat_id,
+                    config.digest.hour, config.digest.minute, config.digest.top_n,
+                    config.webapp.public_url if config.webapp.enabled else None,
+                )
+            )
+        )
+        logger.info(
+            "digest scheduled daily at %02d:%02d KST (top %d)",
+            config.digest.hour, config.digest.minute, config.digest.top_n,
+        )
+
     for crawler in crawlers:
         site_config = crawler.site_config
         chat_id = site_config.chat_id or config.telegram.default_chat_id
@@ -133,6 +199,8 @@ async def async_main(config_path: str) -> None:
     try:
         await asyncio.gather(*tasks)
     finally:
+        if webapp_runner is not None:
+            await webapp_runner.cleanup()
         await admin_bot.stop()
         await db.close()
 

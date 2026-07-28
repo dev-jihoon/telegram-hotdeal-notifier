@@ -76,13 +76,18 @@ async def sync_site(
             or existing.price != article.price
             or existing.status != article.status
             or existing.category != article.category
+            or existing.mall != article.mall
+            or existing.delivery != article.delivery
         )
         likes_changed = existing.likes != article.likes
+        price_changed = existing.price != article.price and article.price is not None
 
         if existing.message_id is None:
             # 기준선으로만 저장돼 있던(텔레그램 미전송) 글 -> 실제 내용이 바뀐 경우에만
             # 그제서야 처음으로 전송한다. 추천수만 오른 건 promote하지 않는다.
             if content_changed:
+                if price_changed:
+                    await db.record_price_event(site, article.article_id, existing.price, article.price, now)
                 message_id, has_photo = await notifier.send(article, chat_id)
                 await db.promote_baseline(
                     site,
@@ -96,6 +101,8 @@ async def sync_site(
                     status=article.status,
                     thumbnail_url=article.thumbnail_url,
                     category=article.category,
+                    mall=article.mall,
+                    delivery=article.delivery,
                     now=now,
                 )
                 logger.info("[%s] baseline article changed, now sending %s", site, article.article_id)
@@ -106,7 +113,12 @@ async def sync_site(
         if content_changed or (likes_changed and _throttle_elapsed(
             existing.last_edited_at, crawl_config.likes_edit_throttle_minutes, now
         )):
-            await notifier.edit(article, existing.chat_id, existing.message_id, existing.has_photo)
+            if price_changed:
+                await db.record_price_event(site, article.article_id, existing.price, article.price, now)
+            await notifier.edit(
+                article, existing.chat_id, existing.message_id, existing.has_photo,
+                previous_price=existing.price if price_changed else None,
+            )
             await db.update_article(
                 site,
                 article.article_id,
@@ -116,6 +128,8 @@ async def sync_site(
                 status=article.status,
                 thumbnail_url=article.thumbnail_url,
                 category=article.category,
+                mall=article.mall,
+                delivery=article.delivery,
                 now=now,
                 edited=True,
             )
@@ -131,6 +145,8 @@ async def sync_site(
                 status=article.status,
                 thumbnail_url=article.thumbnail_url,
                 category=article.category,
+                mall=article.mall,
+                delivery=article.delivery,
                 now=now,
                 edited=False,
             )

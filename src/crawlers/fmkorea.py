@@ -77,12 +77,19 @@ def _parse_listing(html: str) -> list[Article]:
                 likes = int(text)
 
         price = None
+        mall = None
+        delivery = None
         for span in row.select(".hotdeal_info span"):
-            if "가격" in span.get_text():
-                price_a = span.select_one("a")
-                if price_a:
-                    price = price_a.get_text(strip=True)
-                break
+            text = span.get_text()
+            link = span.select_one("a")
+            if not link:
+                continue
+            if "가격" in text:
+                price = link.get_text(strip=True)
+            elif "쇼핑몰" in text:
+                mall = link.get_text(strip=True)
+            elif "배송" in text:
+                delivery = link.get_text(strip=True)
         if price is None:
             price = extract_price(title)
 
@@ -106,6 +113,8 @@ def _parse_listing(html: str) -> list[Article]:
                 likes=likes,
                 thumbnail_url=thumbnail_url,
                 category=category,
+                mall=mall,
+                delivery=delivery,
                 status=status,
             )
         )

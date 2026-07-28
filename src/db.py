@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS articles (
     status TEXT NOT NULL,
     thumbnail_url TEXT,
     category TEXT,
+    mall TEXT,
+    delivery TEXT,
     chat_id INTEGER,
     message_id INTEGER,
     has_photo INTEGER NOT NULL DEFAULT 0,
@@ -37,6 +39,14 @@ CREATE TABLE IF NOT EXISTS site_state (
     last_success_at TEXT,
     last_error TEXT
 );
+CREATE TABLE IF NOT EXISTS price_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site TEXT NOT NULL,
+    article_id TEXT NOT NULL,
+    old_price TEXT,
+    new_price TEXT,
+    changed_at TEXT NOT NULL
+);
 """
 
 # 이미 존재하는 DB 파일에도 안전하게 컬럼을 추가하기 위한 마이그레이션 목록.
@@ -47,6 +57,8 @@ _MIGRATIONS: list[tuple[str, str]] = [
     ("site_state.last_success_at", "ALTER TABLE site_state ADD COLUMN last_success_at TEXT"),
     ("site_state.last_error", "ALTER TABLE site_state ADD COLUMN last_error TEXT"),
     ("articles.category", "ALTER TABLE articles ADD COLUMN category TEXT"),
+    ("articles.mall", "ALTER TABLE articles ADD COLUMN mall TEXT"),
+    ("articles.delivery", "ALTER TABLE articles ADD COLUMN delivery TEXT"),
 ]
 
 
@@ -61,6 +73,8 @@ class TrackedArticle:
     status: ArticleStatus
     thumbnail_url: str | None
     category: str | None
+    mall: str | None
+    delivery: str | None
     chat_id: int | None
     message_id: int | None
     has_photo: bool
@@ -81,6 +95,8 @@ class TrackedArticle:
             status=ArticleStatus(row["status"]),
             thumbnail_url=row["thumbnail_url"],
             category=row["category"],
+            mall=row["mall"],
+            delivery=row["delivery"],
             chat_id=row["chat_id"],
             message_id=row["message_id"],
             has_photo=bool(row["has_photo"]),
@@ -124,15 +140,16 @@ class Database:
                 """
             )
             await self.conn.executescript(SCHEMA)
-            await self.conn.execute(
-                """
-                INSERT INTO articles
-                SELECT site, article_id, title, url, price, likes, status, thumbnail_url,
-                       category, chat_id, message_id, has_photo, last_edited_at,
-                       first_seen_at, last_seen_at, deleted_at
-                FROM articles_old
-                """
+            old_cols = {c["name"] for c in await (await self.conn.execute("PRAGMA table_info(articles_old)")).fetchall()}
+            select_cols = ", ".join(
+                col if col in old_cols else f"NULL AS {col}"
+                for col in (
+                    "site", "article_id", "title", "url", "price", "likes", "status",
+                    "thumbnail_url", "category", "mall", "delivery", "chat_id", "message_id",
+                    "has_photo", "last_edited_at", "first_seen_at", "last_seen_at", "deleted_at",
+                )
             )
+            await self.conn.execute(f"INSERT INTO articles SELECT {select_cols} FROM articles_old")
             await self.conn.execute("DROP TABLE articles_old")
             await self.conn.commit()
 
@@ -168,9 +185,9 @@ class Database:
             """
             INSERT INTO articles (
                 site, article_id, title, url, price, likes, status,
-                thumbnail_url, category, chat_id, message_id, has_photo,
+                thumbnail_url, category, mall, delivery, chat_id, message_id, has_photo,
                 last_edited_at, first_seen_at, last_seen_at, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             ON CONFLICT(site, article_id) DO UPDATE SET
                 title = excluded.title,
                 url = excluded.url,
@@ -179,6 +196,8 @@ class Database:
                 status = excluded.status,
                 thumbnail_url = excluded.thumbnail_url,
                 category = excluded.category,
+                mall = excluded.mall,
+                delivery = excluded.delivery,
                 chat_id = excluded.chat_id,
                 message_id = excluded.message_id,
                 has_photo = excluded.has_photo,
@@ -196,6 +215,8 @@ class Database:
                 article.status.value,
                 article.thumbnail_url,
                 article.category,
+                article.mall,
+                article.delivery,
                 chat_id,
                 message_id,
                 int(has_photo),
@@ -216,9 +237,9 @@ class Database:
             """
             INSERT INTO articles (
                 site, article_id, title, url, price, likes, status,
-                thumbnail_url, category, chat_id, message_id, has_photo,
+                thumbnail_url, category, mall, delivery, chat_id, message_id, has_photo,
                 last_edited_at, first_seen_at, last_seen_at, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, ?, ?, NULL)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, ?, ?, NULL)
             ON CONFLICT(site, article_id) DO NOTHING
             """,
             [
@@ -232,6 +253,8 @@ class Database:
                     a.status.value,
                     a.thumbnail_url,
                     a.category,
+                    a.mall,
+                    a.delivery,
                     now,
                     now,
                 )
@@ -254,6 +277,8 @@ class Database:
         status: ArticleStatus,
         thumbnail_url: str | None,
         category: str | None,
+        mall: str | None,
+        delivery: str | None,
         now: str,
     ) -> None:
         """기준선으로만 저장돼 있던(텔레그램 미전송) 글이 바뀌어 처음 전송될 때 사용."""
@@ -261,7 +286,8 @@ class Database:
             """
             UPDATE articles
             SET chat_id = ?, message_id = ?, has_photo = ?, title = ?, price = ?, likes = ?,
-                status = ?, thumbnail_url = ?, category = ?, last_seen_at = ?, last_edited_at = ?
+                status = ?, thumbnail_url = ?, category = ?, mall = ?, delivery = ?,
+                last_seen_at = ?, last_edited_at = ?
             WHERE site = ? AND article_id = ?
             """,
             (
@@ -274,6 +300,8 @@ class Database:
                 status.value,
                 thumbnail_url,
                 category,
+                mall,
+                delivery,
                 now,
                 now,
                 site,
@@ -293,6 +321,8 @@ class Database:
         status: ArticleStatus,
         thumbnail_url: str | None,
         category: str | None,
+        mall: str | None,
+        delivery: str | None,
         now: str,
         edited: bool,
     ) -> None:
@@ -301,20 +331,20 @@ class Database:
                 """
                 UPDATE articles
                 SET title = ?, price = ?, likes = ?, status = ?, thumbnail_url = ?, category = ?,
-                    last_seen_at = ?, last_edited_at = ?
+                    mall = ?, delivery = ?, last_seen_at = ?, last_edited_at = ?
                 WHERE site = ? AND article_id = ?
                 """,
-                (title, price, likes, status.value, thumbnail_url, category, now, now, site, article_id),
+                (title, price, likes, status.value, thumbnail_url, category, mall, delivery, now, now, site, article_id),
             )
         else:
             await self.conn.execute(
                 """
                 UPDATE articles
                 SET title = ?, price = ?, likes = ?, status = ?, thumbnail_url = ?, category = ?,
-                    last_seen_at = ?
+                    mall = ?, delivery = ?, last_seen_at = ?
                 WHERE site = ? AND article_id = ?
                 """,
-                (title, price, likes, status.value, thumbnail_url, category, now, site, article_id),
+                (title, price, likes, status.value, thumbnail_url, category, mall, delivery, now, site, article_id),
             )
         await self.conn.commit()
 
@@ -431,3 +461,54 @@ class Database:
                 "last_error": state.get("last_error"),
             }
         return report
+
+    async def record_price_event(
+        self, site: str, article_id: str, old_price: str | None, new_price: str | None, now: str
+    ) -> None:
+        await self.conn.execute(
+            "INSERT INTO price_events (site, article_id, old_price, new_price, changed_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (site, article_id, old_price, new_price, now),
+        )
+        await self.conn.commit()
+
+    async def get_top_articles_since(self, cutoff: str, limit: int) -> list[TrackedArticle]:
+        """다이제스트용: 지정 시각 이후 처음 발견된 글 중 추천수 상위 N개."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM articles WHERE first_seen_at >= ? AND deleted_at IS NULL "
+            "ORDER BY likes DESC LIMIT ?",
+            (cutoff, limit),
+        )
+        rows = await cursor.fetchall()
+        return [TrackedArticle.from_row(row) for row in rows]
+
+    async def get_latest_old_prices(self, site_article_ids: list[tuple[str, str]]) -> dict[tuple[str, str], str]:
+        """주어진 (site, article_id) 목록에 대해 가장 최근 가격 변동의 old_price를 찾는다.
+
+        미니 웹앱에서 할인율을 계산할 때 사용 (price_events는 개인 봇 규모라 전체 스캔해도 가볍다).
+        """
+        if not site_article_ids:
+            return {}
+        wanted = set(site_article_ids)
+        result: dict[tuple[str, str], str] = {}
+        cursor = await self.conn.execute(
+            "SELECT site, article_id, old_price FROM price_events ORDER BY changed_at DESC"
+        )
+        async for row in cursor:
+            key = (row["site"], row["article_id"])
+            if key in wanted and key not in result and row["old_price"]:
+                result[key] = row["old_price"]
+                if len(result) == len(wanted):
+                    break
+        return result
+
+    async def get_mall_counts_since(self, cutoff: str) -> dict[str, int]:
+        """다이제스트용: 지정 시각 이후 처음 발견된 글의 쇼핑몰별 등장 횟수."""
+        cursor = await self.conn.execute(
+            "SELECT mall, COUNT(*) AS n FROM articles "
+            "WHERE first_seen_at >= ? AND deleted_at IS NULL AND mall IS NOT NULL "
+            "GROUP BY mall ORDER BY n DESC",
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return {row["mall"]: row["n"] for row in rows}

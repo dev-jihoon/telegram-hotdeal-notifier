@@ -5,7 +5,7 @@ import re
 from bs4 import BeautifulSoup
 
 from ..models import Article, ArticleStatus
-from ..price import extract_price
+from ..price import extract_mall, extract_price
 from .base import BaseCrawler
 from .cf_bypass import cf_get
 from .registry import register_crawler
@@ -91,6 +91,7 @@ def _parse_listing(html: str) -> list[Article]:
                 price=price,
                 likes=likes,
                 thumbnail_url=None,
+                mall=extract_mall(title),
                 status=status,
             )
         )

@@ -73,13 +73,22 @@ def _parse_listing(html: str) -> list[Article]:
                     break
 
         price = None
-        for dd in link.select(".app-list-meta.zod-board--deal-meta dd"):
-            text = dd.get_text(" ", strip=True)
-            if "가격:" in text:
+        mall = None
+        delivery = None
+        meta_list = link.select_one(".app-list-meta.zod-board--deal-meta")
+        if meta_list:
+            dts = meta_list.select("dt")
+            dds = meta_list.select("dd")
+            for dt, dd in zip(dts, dds):
+                label = dt.get_text(strip=True)
                 strong = dd.select_one("strong")
-                if strong:
-                    price = strong.get_text(strip=True)
-                break
+                value = strong.get_text(strip=True) if strong else dd.get_text(strip=True)
+                if "홈페이지" in label or "장소" in label:
+                    mall = value
+                elif "가격" in label:
+                    price = value
+                elif "배송비" in label:
+                    delivery = value
 
         likes = None
         likes_tag = link.select_one(".app-list__voted-count")
@@ -100,6 +109,8 @@ def _parse_listing(html: str) -> list[Article]:
                 price=price,
                 likes=likes,
                 thumbnail_url=thumbnail_url,
+                mall=mall,
+                delivery=delivery,
                 status=status,
             )
         )

@@ -5,6 +5,7 @@ import re
 from bs4 import BeautifulSoup, Tag
 
 from ..models import Article, ArticleStatus
+from ..price import extract_mall
 from .base import BaseCrawler
 from .cf_bypass import cf_get
 from .registry import register_crawler
@@ -75,7 +76,7 @@ def _parse_listing(html: str) -> list[Article]:
             if text.lstrip("-").isdigit():
                 likes = int(text)
 
-        price = _extract_price(row)
+        price, delivery = _extract_price_and_delivery(row)
 
         category_tag = row.select_one(".market-info-sub .category")
         category = category_tag.get_text(strip=True) if category_tag else None
@@ -100,6 +101,8 @@ def _parse_listing(html: str) -> list[Article]:
                 likes=likes,
                 thumbnail_url=thumbnail_url,
                 category=category,
+                mall=extract_mall(title),
+                delivery=delivery,
                 status=status,
             )
         )
@@ -107,14 +110,20 @@ def _parse_listing(html: str) -> list[Article]:
     return articles
 
 
-def _extract_price(row: Tag) -> str | None:
+def _extract_price_and_delivery(row: Tag) -> tuple[str | None, str | None]:
     info = row.select_one(".market-info-sub p:first-child")
     if not info:
-        return None
+        return None, None
+
+    price = None
+    delivery = None
     for span in info.find_all("span", recursive=False):
         first_text = span.find(string=True, recursive=False)
-        if first_text and first_text.strip() == "가격":
+        label = first_text.strip() if first_text else ""
+        if label == "가격":
             price_span = span.find("span")
             if price_span:
-                return price_span.get_text(strip=True)
-    return None
+                price = price_span.get_text(strip=True)
+        elif label.startswith("배송비"):
+            delivery = span.get_text(strip=True)[len("배송비") :].strip() or None
+    return price, delivery

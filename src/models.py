@@ -18,4 +18,6 @@ class Article:
     likes: int | None = None
     thumbnail_url: str | None = None
     category: str | None = None
+    mall: str | None = None
+    delivery: str | None = None
     status: ArticleStatus = ArticleStatus.ACTIVE

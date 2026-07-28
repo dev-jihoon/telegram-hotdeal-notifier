@@ -36,10 +36,28 @@ class SiteConfig:
 
 
 @dataclass
+class DigestConfig:
+    enabled: bool = False
+    hour: int = 9
+    minute: int = 0
+    top_n: int = 5
+    chat_id: int | None = None
+
+
+@dataclass
+class WebappConfig:
+    enabled: bool = False
+    port: int = 8080
+    public_url: str | None = None
+
+
+@dataclass
 class Config:
     telegram: TelegramConfig
     database: DatabaseConfig
     crawl: CrawlConfig
+    digest: DigestConfig
+    webapp: WebappConfig
     sites: dict[str, SiteConfig] = field(default_factory=dict)
 
 
@@ -50,10 +68,15 @@ def load_config(path: str | Path) -> Config:
     telegram = TelegramConfig(**raw["telegram"])
     database = DatabaseConfig(**raw.get("database", {}))
     crawl = CrawlConfig(**raw.get("crawl", {}))
+    digest = DigestConfig(**raw.get("digest", {}))
+    webapp = WebappConfig(**raw.get("webapp", {}))
 
     sites: dict[str, SiteConfig] = {}
     for key, site_raw in (raw.get("sites") or {}).items():
         site_raw = site_raw or {}
         sites[key] = SiteConfig(key=key, **site_raw)
 
-    return Config(telegram=telegram, database=database, crawl=crawl, sites=sites)
+    return Config(
+        telegram=telegram, database=database, crawl=crawl,
+        digest=digest, webapp=webapp, sites=sites,
+    )
