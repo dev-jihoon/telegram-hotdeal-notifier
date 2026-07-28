@@ -49,8 +49,6 @@ async def send_digest(
 
     mall_counts = await db.get_mall_counts_since(cutoff)
 
-    await notifier.send_media_group(chat_id, articles)
-
     text = _build_summary_text(articles, mall_counts)
     await notifier.send_digest_text(chat_id, text, webapp_url=webapp_url)
     logger.info("digest sent with %d articles", len(articles))

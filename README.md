@@ -23,6 +23,7 @@
 git clone <이 저장소 URL>
 cd telegram-hotdeal-notifier
 cp config.example.yaml config.yaml
+cp docker-compose.example.yml docker-compose.yml
 ```
 
 `config.yaml`을 열어 아래 값을 채웁니다.
@@ -92,9 +93,9 @@ sites:
 `config.yaml`에서 `digest.enabled: true`로 켜면 매일 `digest.hour:digest.minute`(한국시간)에
 최근 24시간 동안 처음 올라온 글 중 추천수 상위 `digest.top_n`개를 정리해서 보냅니다.
 
-1. 썸네일이 있는 글들을 앨범(미디어그룹)으로 먼저 전송 (최대 10장)
-2. 순위/제목/가격/추천수와 실제 링크, 인기 쇼핑몰 랭킹을 담은 텍스트 메시지를 이어서 전송
-   (미디어그룹 항목에는 텔레그램 정책상 버튼을 못 붙여서, 클릭 가능한 링크는 이 텍스트가 담당합니다)
+순위/제목/가격/추천수와 실제 링크, 인기 쇼핑몰 랭킹을 담은 텍스트 메시지 하나로 전송합니다.
+(앨범 미리보기도 고려했지만, 미디어그룹 항목에는 버튼을 못 붙여서 다른 알림 메시지들과 버튼
+구성이 달라지는 게 더 어색해 텍스트 메시지로 통일했습니다.)
 
 기본적으로 `telegram.default_chat_id`로 가고, `digest.chat_id`를 지정하면 다른 채널로 보낼 수
 있습니다.

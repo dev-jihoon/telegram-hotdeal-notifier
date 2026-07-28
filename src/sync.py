@@ -71,13 +71,13 @@ async def sync_site(
             logger.info("[%s] new article %s", site, article.article_id)
             continue
 
+        # category/mall/delivery는 부가 정보라 그 자체 변화로는 알림을 재전송하지 않는다.
+        # (이 필드들이 나중에 추가되면서 기존 글들이 전부 NULL -> 실제값으로 한꺼번에
+        # "변경됨"으로 잡혀 대량 재전송/재수정되는 사고가 있었다 - 재발 방지)
         content_changed = (
             existing.title != article.title
             or existing.price != article.price
             or existing.status != article.status
-            or existing.category != article.category
-            or existing.mall != article.mall
-            or existing.delivery != article.delivery
         )
         likes_changed = existing.likes != article.likes
         price_changed = existing.price != article.price and article.price is not None

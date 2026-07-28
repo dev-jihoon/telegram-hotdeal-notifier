@@ -7,7 +7,7 @@ import time
 from collections import defaultdict
 from typing import Awaitable, Callable, TypeVar
 
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, RetryAfter, TelegramError
 
@@ -200,32 +200,6 @@ class TelegramNotifier:
     async def send_alert(self, chat_id: int, text: str) -> None:
         await self._limiter.wait(chat_id)
         await _with_flood_retry(lambda: self._bot.send_message(chat_id=chat_id, text=text))
-
-    async def send_media_group(self, chat_id: int, articles: list[Article]) -> None:
-        """다이제스트용: 썸네일이 있는 글들을 앨범(미디어그룹)으로 전송한다.
-
-        미디어그룹 아이템에는 인라인 버튼을 못 붙이므로, 순위/제목만 짧게 캡션으로
-        보여주고 실제 링크는 뒤따르는 텍스트 메시지가 담당한다.
-        """
-        media = []
-        for i, article in enumerate(articles, start=1):
-            if not article.thumbnail_url:
-                continue
-            site_label = SITE_LABELS.get(article.site, article.site)
-            caption = f"{i}위 [{site_label}] {html.escape(article.title[:60], quote=False)}"
-            media.append(
-                InputMediaPhoto(media=article.thumbnail_url, caption=caption, parse_mode=ParseMode.HTML)
-            )
-        if not media:
-            return
-
-        await self._limiter.wait(chat_id)
-        try:
-            await _with_flood_retry(
-                lambda: self._bot.send_media_group(chat_id=chat_id, media=media[:10])
-            )
-        except TelegramError:
-            logger.warning("Failed to send digest media group, skipping album preview", exc_info=True)
 
     async def send_digest_text(self, chat_id: int, text: str, webapp_url: str | None = None) -> None:
         """다이제스트 요약 텍스트를 전송한다.
