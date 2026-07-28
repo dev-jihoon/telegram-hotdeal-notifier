@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import re
+
+import aiohttp
+from bs4 import BeautifulSoup
+
+from ..models import Article, ArticleStatus
+from .base import DEFAULT_HEADERS, BaseCrawler
+from .registry import register_crawler
+
+BASE_URL = "https://arca.live"
+LIST_URL = BASE_URL + "/b/hotdeal?p={page}"
+ARTICLE_RE = re.compile(r"/b/([\w\d]+)/(\d+)")
+
+
+@register_crawler("arcalive")
+class ArcaLiveCrawler(BaseCrawler):
+    async def fetch(self) -> list[Article]:
+        articles: list[Article] = []
+        async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
+            for page in range(1, self.crawl_config.listing_pages + 1):
+                url = LIST_URL.format(page=page)
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    html = await resp.text(errors="replace")
+                articles.extend(_parse_listing(html))
+        return articles
+
+
+def _parse_listing(html: str) -> list[Article]:
+    soup = BeautifulSoup(html, "lxml")
+    articles: list[Article] = []
+
+    table = soup.select_one(".list-table")
+    if table is None:
+        return articles
+
+    for row in table.select(".vrow.hybrid"):
+        title_tag = row.select_one("a.title.hybrid-title")
+        if not title_tag or not title_tag.get("href"):
+            continue
+        match = ARTICLE_RE.search(title_tag["href"])
+        if not match:
+            continue
+        board_id, article_id = match.group(1), match.group(2)
+
+        title = "".join(title_tag.find_all(string=True, recursive=False)).strip()
+        if not title:
+            continue
+
+        status = ArticleStatus.ENDED if row.select_one(".deal-close") else ArticleStatus.ACTIVE
+
+        likes = None
+        rate_tag = row.select_one(".col-rate")
+        if rate_tag:
+            text = rate_tag.get_text(strip=True)
+            if text.lstrip("-").isdigit():
+                likes = int(text)
+
+        price_tag = row.select_one(".deal-price")
+        price = price_tag.get_text(strip=True) if price_tag else None
+
+        thumb_tag = row.select_one(".vrow-preview img")
+        thumbnail_url = None
+        if thumb_tag and thumb_tag.get("src"):
+            src = thumb_tag["src"]
+            thumbnail_url = f"https:{src}" if src.startswith("//") else src
+
+        category_tag = row.select_one(".badge")
+        category = category_tag.get_text(strip=True) if category_tag else None
+
+        articles.append(
+            Article(
+                site="arcalive",
+                article_id=article_id,
+                title=title,
+                url=f"{BASE_URL}/b/{board_id}/{article_id}",
+                price=price,
+                likes=likes,
+                thumbnail_url=thumbnail_url,
+                category=category,
+                status=status,
+            )
+        )
+
+    return articles
