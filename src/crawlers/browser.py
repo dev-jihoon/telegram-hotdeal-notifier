@@ -8,12 +8,18 @@ from playwright.async_api import Browser, BrowserContext, Playwright, async_play
 
 logger = logging.getLogger(__name__)
 
+# Cloudflare JS 챌린지 타이틀(클라이언트 사이드에서 몇 초 안에 자동으로 풀림) - 브라우저
+# locale을 ko-KR로 설정해두면 이 페이지 자체가 한국어로 내려온다("잠시만 기다리십시오…").
+# 영어 문구만 체크했다가 한국어 챌린지를 "이미 풀림"으로 오판해서 기다리지도 않고 챌린지
+# 페이지를 그대로 가져와버린 사고가 있었다 - 반드시 실제로 나온 언어를 다 포함해야 한다.
+_CHALLENGE_TITLE_MARKERS = ("Just a moment", "잠시만 기다리십시오")
+
 # 차단/챌린지 페이지 본문에서 공통적으로 보이는 문구들 (cf-mitigated 같은 차단 신호는
 # 응답 헤더에만 있어 본문 검사로는 못 잡지만, 그 경우는 항상 비-200 상태코드도 같이 오므로
 # status 체크로 걸러진다). "해당 아이피는 차단된 아이피입니다"는 coolenjoy가 IP를 차단할 때
 # HTTP 200으로 주는 안내 문구라 상태코드만으론 못 잡아서 따로 추가했다. 진짜 삭제/404 마커와
 # 겹치지 않도록 확인된 값만 넣는다.
-_BLOCK_MARKERS = ("Just a moment", "Access Denied", "Attention Required", "차단된 아이피")
+_BLOCK_MARKERS = (*_CHALLENGE_TITLE_MARKERS, "Access Denied", "Attention Required", "차단된 아이피")
 
 # Playwright Chromium(CDP로 제어)은 headless 특유의 신호(navigator.webdriver, CDP 연결
 # 자체의 타이밍/행동 패턴, headless 전용 WebGL 렌더러 문자열 등)가 있어 Cloudflare가
@@ -93,7 +99,7 @@ async def browser_get(url: str, timeout: int = 20) -> tuple[int, str]:
         status = response.status if response else 0
         for _ in range(int(timeout)):
             title = await page.title()
-            if "Just a moment" not in title:
+            if not any(marker in title for marker in _CHALLENGE_TITLE_MARKERS):
                 break
             await page.wait_for_timeout(1000)
         html = await page.content()
