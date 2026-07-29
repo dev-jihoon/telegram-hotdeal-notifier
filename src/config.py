@@ -25,6 +25,9 @@ class CrawlConfig:
     likes_edit_throttle_minutes: int = 10
     failure_alert_threshold: int = 3
     failure_realert_every: int = 30
+    deletion_check_cooldown_minutes: int = 30
+    max_deletion_checks_per_cycle: int = 15
+    resume_silent_threshold_minutes: int = 20
 
 
 @dataclass

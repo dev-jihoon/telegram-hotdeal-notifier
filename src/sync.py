@@ -62,13 +62,31 @@ async def sync_site(
     tracked = await db.get_active_articles(site)
     known_max_id = await db.get_max_numeric_article_id(site)
 
+    # 봇이 한동안(서버 재시작, VPN 정리, 배포 등) 멈춰있다 오랜만에 재개되면, 그 사이 쌓인
+    # 신규 글이 전부 한꺼번에 "새 글"로 전송돼 도배처럼 느껴진다. 마지막 성공 크롤과의
+    # 간격이 임계값을 넘으면 이번 한 사이클은 부트스트랩처럼 조용히 기준선만 다시 잡고,
+    # 다음 사이클부터 정상적으로 알림을 재개한다.
+    silent_catchup = False
+    last_success_at = await db.get_site_last_success_at(site)
+    if last_success_at is not None:
+        gap = datetime.now(timezone.utc) - datetime.fromisoformat(last_success_at)
+        threshold = timedelta(minutes=crawl_config.resume_silent_threshold_minutes)
+        if gap >= threshold:
+            silent_catchup = True
+            logger.warning(
+                "[%s] resumed after a %.0f minute gap - treating this cycle as a silent "
+                "re-baseline instead of catching up with a burst of notifications",
+                site, gap.total_seconds() / 60,
+            )
+
     seen_ids: set[str] = set()
     for article in articles:
         seen_ids.add(article.article_id)
         existing = tracked.get(article.article_id)
         try:
             await _process_article(
-                db, notifier, site, chat_id, crawl_config, article, existing, now, known_max_id
+                db, notifier, site, chat_id, crawl_config, article, existing, now,
+                known_max_id, silent_catchup,
             )
         except Exception:
             # 글 하나 처리(전송/수정 등)가 실패해도 이번 사이클의 나머지 글은 계속 처리한다.
@@ -78,11 +96,27 @@ async def sync_site(
                 "[%s] failed to process article %s, skipping for this cycle", site, article.article_id
             )
 
+    # 목록에서 사라진 글마다 매 사이클 개별 페이지를 요청하면(추적 개수가 쌓일수록 요청도
+    # 늘어난다), 사이트의 비정상 접근 탐지에 걸려 크롤러 IP 자체가 차단될 수 있다 -
+    # 실제로 이 작업 중 coolenjoy가 이런 패턴으로 로컬 IP를 통째로 차단한 사례가 있었다
+    # (차단되면 안내 페이지가 200으로 오길래 "계속 존재함"으로 오판되어, 삭제 감지가
+    # 영구적으로 조용히 멈춰버린다). 그래서 (1) 한 번 확인한 글은 쿨다운 동안 재확인하지
+    # 않고, (2) 사이클당 확인 개수에 상한을 둬서 요청을 시간에 걸쳐 분산시킨다.
+    cooldown = timedelta(minutes=crawl_config.deletion_check_cooldown_minutes)
+    checks_done = 0
     for article_id, existing in tracked.items():
         if article_id in seen_ids:
             continue
+        if existing.last_checked_at and datetime.now(timezone.utc) - datetime.fromisoformat(
+            existing.last_checked_at
+        ) < cooldown:
+            continue
+        if checks_done >= crawl_config.max_deletion_checks_per_cycle:
+            break
+        checks_done += 1
         try:
             still_exists = await crawler.check_exists(existing.url)
+            await db.touch_checked_at(site, article_id, now)
             if not still_exists:
                 if existing.message_id is not None:
                     await notifier.delete(existing.chat_id, existing.message_id)
@@ -104,22 +138,27 @@ async def _process_article(
     existing: TrackedArticle | None,
     now: str,
     known_max_id: int | None,
+    silent_catchup: bool,
 ) -> None:
     if existing is None:
         # 게시글 번호는 사이트가 순차 발급하므로, 지금까지 관측한 최고 번호보다 작은
         # 번호가 처음 발견되면 오늘 새로 쓰인 글이 아니라 인기글 재노출 등으로 뒤늦게
         # 크롤 범위에 걸린 오래된 글이다 - 신규 전송 없이 조용히 기록만 한다.
         # (부트스트랩 당시 목록에 없었던 오래된 글이 "새 글"로 오인 전송되던 문제의 원인)
-        if (
+        # silent_catchup(오랜만에 재개)인 경우엔 번호와 무관하게 전부 조용히 기록만 한다.
+        if silent_catchup or (
             known_max_id is not None
             and article.article_id.isdigit()
             and int(article.article_id) <= known_max_id
         ):
             await db.insert_baseline_articles([article], now)
-            logger.info(
-                "[%s] old article %s resurfaced in listing (max seen so far: %d), tracked silently",
-                site, article.article_id, known_max_id,
-            )
+            if silent_catchup:
+                logger.info("[%s] silent catch-up: article %s tracked without sending", site, article.article_id)
+            else:
+                logger.info(
+                    "[%s] old article %s resurfaced in listing (max seen so far: %s), tracked silently",
+                    site, article.article_id, known_max_id,
+                )
             return
         message_id, has_photo = await notifier.send(article, chat_id)
         await db.insert_article(article, chat_id, message_id, has_photo, now)

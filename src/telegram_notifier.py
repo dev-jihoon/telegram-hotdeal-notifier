@@ -54,7 +54,6 @@ class RateLimiter:
 
 
 def format_message(article: Article) -> str:
-    # 가격은 대부분 게시글 제목에 이미 포함돼 있어(제목 굵은 글씨로 표시) 중복 표시하지 않는다.
     site_label = SITE_LABELS.get(article.site, article.site)
     prefix = f"[{site_label}]"
     if article.mall and article.mall != article.category:
@@ -63,8 +62,10 @@ def format_message(article: Article) -> str:
         prefix += f"[{html.escape(article.category, quote=False)}]"
     lines = [f"<b>{prefix} {html.escape(article.title, quote=False)}</b>"]
 
-    if article.delivery:
-        lines.append(f"🚚 {html.escape(article.delivery, quote=False)}")
+    # 가격/배송비를 "22,210원/무료" 형태로 한 줄에 표시 (추천수는 계속 표시하지 않음)
+    price_parts = [p for p in (article.price, article.delivery) if p]
+    if price_parts:
+        lines.append(f"💰 {html.escape('/'.join(price_parts), quote=False)}")
 
     text = "\n".join(lines)
 
@@ -177,7 +178,14 @@ class TelegramNotifier:
                     )
                 )
         except BadRequest as e:
-            if "message is not modified" in str(e).lower():
+            message = str(e).lower()
+            if "message is not modified" in message:
+                return
+            if "message to edit not found" in message or "message can't be edited" in message:
+                # 관리자가 채널에서 직접 지웠거나 오래돼서 텔레그램이 더 이상 수정을 허용하지
+                # 않는 경우 - 여기서 예외를 던지면 다음 사이클에도 계속 같은 글을 수정 시도해서
+                # 영구적으로 에러 로그만 반복된다. 호출부가 DB를 정상 갱신하도록 조용히 넘어간다.
+                logger.info("telegram message %s for chat %s no longer editable, skipping", message_id, chat_id)
                 return
             raise
 

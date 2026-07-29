@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -62,6 +63,11 @@ async def run_site_loop(
     failures: FailureTracker,
 ) -> None:
     site_label = SITE_LABELS.get(site_key, site_key)
+    # 9개 사이트 루프가 전부 거의 같은 순간에 시작돼서 이후 사이클도 계속 같은 타이밍에
+    # 몰린다 - 매 사이클 진짜 신규 글이 몇 개씩만 있어도 여러 사이트가 겹치면 순간적으로
+    # 텔레그램에 한꺼번에 도착해서 "도배"처럼 보인다. 시작 시점만 무작위로 흩어두면 이후
+    # 사이클도 계속 그 간격만큼 어긋난 채로 유지되어 자연스럽게 분산된다.
+    await asyncio.sleep(random.uniform(0, interval))
     while True:
         if not await db.get_site_enabled(site_key):
             await asyncio.sleep(interval)

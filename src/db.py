@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS articles (
     last_edited_at TEXT,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
+    last_checked_at TEXT,
     deleted_at TEXT,
     PRIMARY KEY (site, article_id)
 );
@@ -59,6 +60,7 @@ _MIGRATIONS: list[tuple[str, str]] = [
     ("articles.category", "ALTER TABLE articles ADD COLUMN category TEXT"),
     ("articles.mall", "ALTER TABLE articles ADD COLUMN mall TEXT"),
     ("articles.delivery", "ALTER TABLE articles ADD COLUMN delivery TEXT"),
+    ("articles.last_checked_at", "ALTER TABLE articles ADD COLUMN last_checked_at TEXT"),
 ]
 
 
@@ -81,6 +83,7 @@ class TrackedArticle:
     last_edited_at: str | None
     first_seen_at: str
     last_seen_at: str
+    last_checked_at: str | None
     deleted_at: str | None
 
     @classmethod
@@ -103,6 +106,7 @@ class TrackedArticle:
             last_edited_at=row["last_edited_at"],
             first_seen_at=row["first_seen_at"],
             last_seen_at=row["last_seen_at"],
+            last_checked_at=row["last_checked_at"],
             deleted_at=row["deleted_at"],
         )
 
@@ -146,7 +150,8 @@ class Database:
                 for col in (
                     "site", "article_id", "title", "url", "price", "likes", "status",
                     "thumbnail_url", "category", "mall", "delivery", "chat_id", "message_id",
-                    "has_photo", "last_edited_at", "first_seen_at", "last_seen_at", "deleted_at",
+                    "has_photo", "last_edited_at", "first_seen_at", "last_seen_at",
+                    "last_checked_at", "deleted_at",
                 )
             )
             await self.conn.execute(f"INSERT INTO articles SELECT {select_cols} FROM articles_old")
@@ -323,6 +328,13 @@ class Database:
         )
         await self.conn.commit()
 
+    async def touch_checked_at(self, site: str, article_id: str, now: str) -> None:
+        await self.conn.execute(
+            "UPDATE articles SET last_checked_at = ? WHERE site = ? AND article_id = ?",
+            (now, site, article_id),
+        )
+        await self.conn.commit()
+
     async def mark_deleted(self, site: str, article_id: str, now: str) -> None:
         await self.conn.execute(
             "UPDATE articles SET deleted_at = ? WHERE site = ? AND article_id = ?",
@@ -387,6 +399,13 @@ class Database:
             (site,),
         )
         await self.conn.commit()
+
+    async def get_site_last_success_at(self, site: str) -> str | None:
+        cursor = await self.conn.execute(
+            "SELECT last_success_at FROM site_state WHERE site = ?", (site,)
+        )
+        row = await cursor.fetchone()
+        return row["last_success_at"] if row else None
 
     async def record_crawl_success(self, site: str, now: str) -> None:
         await self.conn.execute(

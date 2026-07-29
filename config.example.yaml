@@ -12,6 +12,10 @@ crawl:
   likes_edit_throttle_minutes: 10    # 추천수만 바뀐 경우 메시지 수정 최소 간격(분)
   failure_alert_threshold: 3         # 이 횟수만큼 연속 실패하면 admin_chat_id로 알림
   failure_realert_every: 30          # 알림 이후에도 계속 실패하면 이 횟수마다 재알림
+  deletion_check_cooldown_minutes: 30  # 삭제 확인(개별 페이지 요청)은 글마다 이 간격 이상 지나야 재시도
+  max_deletion_checks_per_cycle: 15    # 한 사이클에 삭제 확인할 글 수 상한 (사이트 차단 방지용)
+  resume_silent_threshold_minutes: 20  # 마지막 성공 크롤 이후 이만큼 지나서 재개되면, 밀린 글을
+                                        # 한꺼번에 전송하지 않고 조용히 기준선만 다시 잡습니다
 
 digest:
   enabled: false                     # true로 켜면 매일 정해진 시각에 인기 핫딜 요약을 보냅니다
