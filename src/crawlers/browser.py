@@ -20,7 +20,26 @@ _BLOCK_MARKERS = ("Just a moment", "Access Denied", "Attention Required", "차�
 # "실제 JS를 실행하는 브라우저"인데도 자동화로 탐지해 계속 차단하는 경우가 있었다 - 관리자가
 # 같은 서버에서 webtop Firefox로 직접 열었을 때는 성공하는 걸로 확인됨. Firefox는 Playwright가
 # CDP가 아니라 별도 프로토콜(Juggler)로 제어해서 그 특정 탐지에 걸리지 않는다.
+#
+# "진짜 창모드"(headless=False + Xvfb) 시도는 컨테이너에서 xvfb-run이 원인 불명으로 멈춰버려
+# (xauth를 넣어도 재현) 포기했다 - 대신 headless 상태에서 자동화 지문을 최대한 지우는
+# 스텔스 패치(_STEALTH_INIT_SCRIPT)로 접근한다.
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
+
+# 자동화 브라우저임을 드러내는 흔한 신호들을 실제 브라우저처럼 보이게 지운다.
+_STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+try {
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (params) => (
+        params.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : originalQuery(params)
+    );
+} catch (e) {}
+"""
 
 _playwright: Playwright | None = None
 _browser: Browser | None = None
@@ -34,12 +53,8 @@ async def get_browser() -> Browser:
     async with _init_lock:
         if _browser is None:
             _playwright = await async_playwright().start()
-            # headless=False: 실제 서버에서 로그로 확인해보니 headless Firefox도 여전히
-            # 차단됐다 (관리자가 webtop에서 "진짜 창을 띄운" Firefox로 열었을 때만 성공함).
-            # 컨테이너엔 화면이 없으니 Dockerfile의 xvfb-run(가상 디스플레이)으로 감싸서
-            # 돌린다 - headless 특유의 신호 없이 진짜 창모드 브라우저처럼 보이게 하기 위함.
-            _browser = await _playwright.firefox.launch(headless=False)
-            logger.info("playwright firefox browser launched (headed, via xvfb)")
+            _browser = await _playwright.firefox.launch(headless=True)
+            logger.info("playwright firefox browser launched (headless)")
     return _browser
 
 
@@ -61,9 +76,10 @@ async def browser_get(url: str, timeout: int = 20) -> tuple[int, str]:
     페이지 타이틀이 챌린지 문구에서 벗어날 때까지 잠깐 기다린다.
     """
     browser = await get_browser()
-    context = await browser.new_context(user_agent=_UA, locale="ko-KR")
-    # navigator.webdriver=true는 가장 흔한 자동화 탐지 신호라 실제 브라우저처럼 지운다.
-    await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+    context = await browser.new_context(
+        user_agent=_UA, locale="ko-KR", viewport={"width": 1920, "height": 1080}
+    )
+    await context.add_init_script(_STEALTH_INIT_SCRIPT)
     try:
         page = await context.new_page()
         response = await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
