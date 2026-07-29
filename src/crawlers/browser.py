@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Awaitable, Callable
 
-from playwright.async_api import Browser, Playwright, async_playwright
+from playwright.async_api import Browser, BrowserContext, Playwright, async_playwright
 
 logger = logging.getLogger(__name__)
 
@@ -43,23 +43,34 @@ try {
 
 _playwright: Playwright | None = None
 _browser: Browser | None = None
-# 프로세스 전체에서 브라우저 인스턴스 하나만 띄우고 재사용한다 (요청마다 새로 띄우면
-# Cloudflare 챌린지를 매번 새로 풀어야 해서 느리고, 브라우저 기동 자체도 무겁다).
+_context: BrowserContext | None = None
+# 프로세스 전체에서 브라우저/컨텍스트를 하나만 띄우고 계속 재사용한다. 요청마다 새
+# 컨텍스트(쿠키 없음)를 만들고 바로 닫으면 Cloudflare 입장에서 매번 "처음 보는 방문자"로
+# 보여 더 의심스럽다 - 한 번이라도 통과하면 내려주는 cf_clearance 같은 쿠키를 계속
+# 들고 있어야 이후 요청이 수월해진다(실제 사람이 웹탑에서 브라우저를 계속 켜두고 쓰는
+# 것과 동일한 조건을 맞추기 위함).
 _init_lock = asyncio.Lock()
 
 
-async def get_browser() -> Browser:
-    global _playwright, _browser
+async def _get_context() -> BrowserContext:
+    global _playwright, _browser, _context
     async with _init_lock:
-        if _browser is None:
+        if _context is None:
             _playwright = await async_playwright().start()
             _browser = await _playwright.firefox.launch(headless=True)
-            logger.info("playwright firefox browser launched (headless)")
-    return _browser
+            _context = await _browser.new_context(
+                user_agent=_UA, locale="ko-KR", viewport={"width": 1920, "height": 1080}
+            )
+            await _context.add_init_script(_STEALTH_INIT_SCRIPT)
+            logger.info("playwright firefox browser+context launched (headless, persistent)")
+    return _context
 
 
 async def close_browser() -> None:
-    global _playwright, _browser
+    global _playwright, _browser, _context
+    if _context is not None:
+        await _context.close()
+        _context = None
     if _browser is not None:
         await _browser.close()
         _browser = None
@@ -69,19 +80,15 @@ async def close_browser() -> None:
 
 
 async def browser_get(url: str, timeout: int = 20) -> tuple[int, str]:
-    """실제 브라우저(Chromium)로 JS를 실행해 Cloudflare 챌린지를 통과한 뒤 HTML을 가져온다.
+    """실제 브라우저(Firefox)로 JS를 실행해 Cloudflare 챌린지를 통과한 뒤 HTML을 가져온다.
 
     curl_cffi(TLS/HTTP2 핑거프린트 흉내)로는 못 뚫는 "Just a moment..." 류의 JS 챌린지가
     걸린 사이트(zod)용. 챌린지는 몇 초 안에 클라이언트 사이드에서 자동으로 풀리므로,
     페이지 타이틀이 챌린지 문구에서 벗어날 때까지 잠깐 기다린다.
     """
-    browser = await get_browser()
-    context = await browser.new_context(
-        user_agent=_UA, locale="ko-KR", viewport={"width": 1920, "height": 1080}
-    )
-    await context.add_init_script(_STEALTH_INIT_SCRIPT)
+    context = await _get_context()
+    page = await context.new_page()
     try:
-        page = await context.new_page()
         response = await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
         status = response.status if response else 0
         for _ in range(int(timeout)):
@@ -91,7 +98,7 @@ async def browser_get(url: str, timeout: int = 20) -> tuple[int, str]:
             await page.wait_for_timeout(1000)
         html = await page.content()
     finally:
-        await context.close()
+        await page.close()
 
     # 챌린지 통과 실패는 원본 상태코드와 무관하게 최종 렌더링 내용으로 판단한다
     # (Cloudflare가 자체적으로 403을 주는 경우도, 200으로 챌린지 페이지만 계속 보여주는
@@ -102,6 +109,7 @@ async def browser_get(url: str, timeout: int = 20) -> tuple[int, str]:
             url, status, title, len(html),
         )
         return 403, html
+    logger.info("playwright fetched %s (status=%s, title=%r, len=%d)", url, status, title, len(html))
     return status, html
 
 
