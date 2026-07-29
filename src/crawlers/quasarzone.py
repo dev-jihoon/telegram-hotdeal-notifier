@@ -7,7 +7,6 @@ from bs4 import BeautifulSoup, Tag
 from ..models import Article, ArticleStatus
 from ..price import extract_mall
 from .base import BaseCrawler
-from .browser import get_with_fallback
 from .cf_bypass import cf_get
 from .registry import register_crawler
 
@@ -17,17 +16,12 @@ ARTICLE_RE = re.compile(r"/bbs/([\w\d_]+)/views/(\d+)")
 NOT_FOUND_MARKER = "글이 존재하지 않습니다"
 
 
-async def _get(fetch_method: str, url: str) -> tuple[int, str]:
-    # requests(curl_cffi) 모드에서 차단이 감지되면 자동으로 playwright로 폴백한다.
-    return await get_with_fallback(fetch_method, url, cf_get)
-
-
 @register_crawler("quasarzone")
 class QuasarzoneCrawler(BaseCrawler):
     async def fetch(self) -> list[Article]:
         articles: list[Article] = []
         for page in range(1, self.crawl_config.listing_pages + 1):
-            status, html = await _get(self.site_config.fetch_method, LIST_URL.format(page=page))
+            status, html = await cf_get(LIST_URL.format(page=page))
             if status != 200:
                 continue
             articles.extend(_parse_listing(html))
@@ -38,7 +32,7 @@ class QuasarzoneCrawler(BaseCrawler):
         # 담아 보여준다. Cloudflare 우회가 일시적으로 실패하는 경우(403 등)를 삭제로
         # 오판하지 않도록 이 마커 문구나 404가 있을 때만 확정 삭제로 본다.
         try:
-            status, body = await _get(self.site_config.fetch_method, article_url)
+            status, body = await cf_get(article_url)
         except Exception:
             return True
         if status == 404:

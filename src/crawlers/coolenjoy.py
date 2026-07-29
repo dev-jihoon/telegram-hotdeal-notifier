@@ -8,7 +8,6 @@ from bs4 import BeautifulSoup
 from ..models import Article, ArticleStatus
 from ..price import extract_mall, extract_price
 from .base import DEFAULT_HEADERS, BaseCrawler
-from .browser import get_with_fallback
 from .registry import register_crawler
 
 BASE_URL = "https://coolenjoy.net"
@@ -17,14 +16,10 @@ ARTICLE_ID_RE = re.compile(r"/jirum/(\d+)")
 END_KEYWORDS = ("품절", "종료", "매진", "마감")
 
 
-async def _requests_get(url: str) -> tuple[int, str]:
+async def _get(url: str) -> tuple[int, str]:
     async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             return resp.status, await resp.text(errors="replace")
-
-
-async def _get(fetch_method: str, url: str) -> tuple[int, str]:
-    return await get_with_fallback(fetch_method, url, _requests_get)
 
 
 @register_crawler("coolenjoy")
@@ -32,7 +27,7 @@ class CoolenjoyCrawler(BaseCrawler):
     async def fetch(self) -> list[Article]:
         articles: list[Article] = []
         for page in range(1, self.crawl_config.listing_pages + 1):
-            status, html = await _get(self.site_config.fetch_method, LIST_URL.format(page=page))
+            status, html = await _get(LIST_URL.format(page=page))
             if status != 200:
                 continue
             articles.extend(_parse_listing(html))
@@ -42,7 +37,7 @@ class CoolenjoyCrawler(BaseCrawler):
         # 코올엔조이는 IP 차단 시 200으로 안내 문구를 보여주는데, 그 문구는 확인된 삭제
         # 마커가 아니므로 확실한 404일 때만 삭제로 본다 (그 외엔 존재한다고 가정).
         try:
-            status, _ = await _get(self.site_config.fetch_method, article_url)
+            status, _ = await _get(article_url)
         except Exception:
             return True
         return status != 404

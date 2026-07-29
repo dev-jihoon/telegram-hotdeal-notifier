@@ -8,7 +8,6 @@ from bs4 import BeautifulSoup
 
 from ..models import Article, ArticleStatus
 from .base import DEFAULT_HEADERS, BaseCrawler
-from .browser import get_with_fallback
 from .registry import register_crawler
 
 BASE_URL = "https://arca.live"
@@ -16,16 +15,10 @@ LIST_URL = BASE_URL + "/b/hotdeal?p={page}"
 ARTICLE_RE = re.compile(r"/b/([\w\d]+)/(\d+)")
 
 
-async def _requests_get(url: str) -> tuple[int, str]:
+async def _get(url: str) -> tuple[int, str]:
     async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             return resp.status, await resp.text(errors="replace")
-
-
-async def _get(fetch_method: str, url: str) -> tuple[int, str]:
-    # 서버 IP에 따라 Cloudflare가 아카라이브에 챌린지를 걸기도 해서(curl_cffi 흉내로는
-    # 못 뚫음) - requests 모드에서 차단이 감지되면 자동으로 playwright로 폴백한다.
-    return await get_with_fallback(fetch_method, url, _requests_get)
 
 
 @register_crawler("arcalive")
@@ -33,16 +26,16 @@ class ArcaLiveCrawler(BaseCrawler):
     async def fetch(self) -> list[Article]:
         articles: list[Article] = []
         for page in range(1, self.crawl_config.listing_pages + 1):
-            status, html = await _get(self.site_config.fetch_method, LIST_URL.format(page=page))
+            status, html = await _get(LIST_URL.format(page=page))
             if status != 200:
                 continue
             articles.extend(_parse_listing(html))
         return articles
 
     async def check_exists(self, article_url: str) -> bool:
-        # 일시적 오류나 챌린지 실패(403 등)를 삭제로 오판하지 않도록 404만 확정 삭제로 본다.
+        # 일시적 오류(403 등)를 삭제로 오판하지 않도록 404만 확정 삭제로 본다.
         try:
-            status, _ = await _get(self.site_config.fetch_method, article_url)
+            status, _ = await _get(article_url)
         except Exception:
             return True
         return status != 404

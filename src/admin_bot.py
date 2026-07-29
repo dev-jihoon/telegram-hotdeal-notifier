@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 from .config import Config
-from .db import Database
+from .db import AdminContact, Database
 from .settings_registry import (
     CATEGORY_LABELS,
     SETTINGS,
@@ -33,7 +33,10 @@ SETTINGS_MENU = "settings_menu"
 SETTINGS_CAT_PREFIX = "settings_cat:"
 SETTINGS_EDIT_PREFIX = "settings_edit:"
 SETTINGS_CANCEL = "settings_cancel"
-FETCH_METHOD_PREFIX = "fetch_method:"
+ADMINS_MENU = "admins_menu"
+ADMIN_DEL_PREFIX = "admin_del:"
+ADMIN_ADD = "admin_add"
+ADMIN_ADD_CANCEL = "admin_add_cancel"
 
 
 def _relative_time(iso_str: str | None) -> str:
@@ -55,15 +58,27 @@ def _relative_time(iso_str: str | None) -> str:
 class AdminBot:
     """관리자가 1:1 채팅에서 사이트별 on/off와 크롤링 현황을 확인/제어할 수 있게 한다."""
 
-    def __init__(self, bot_token: str, admin_chat_id: int, db: Database, site_keys: list[str], config: Config):
+    def __init__(
+        self,
+        bot_token: str,
+        admin_chat_id: int,
+        db: Database,
+        site_keys: list[str],
+        config: Config,
+        admin_contacts: list[AdminContact],
+    ):
         self._admin_chat_id = admin_chat_id
         self._db = db
         self._site_keys = site_keys
         self._config = config
+        # TelegramNotifier와 같은 리스트 객체를 공유한다 - 여기서 append/삭제하면(리스트를
+        # 통째로 새로 안 만들고 그 자리에서 수정하면) 재시작 없이 다음 메시지부터 바로 반영된다.
+        self._admin_contacts = admin_contacts
         # 텍스트로 답장받아야 하는 설정(문자열/숫자값)을 편집 중일 때, 그 설정 키를 들고
         # 있는다 - 다음 일반 메시지가 오면 이 값에 대한 답변으로 처리한다. 관리자 한 명만
         # 쓰는 걸 전제로 한 단순한 상태다.
         self._pending_edit: str | None = None
+        self._pending_admin_add = False
         self._app = (
             Application.builder()
             .token(bot_token)
@@ -75,15 +90,17 @@ class AdminBot:
         self._app.add_handler(CommandHandler("sites", self._cmd_sites))
         self._app.add_handler(CommandHandler("status", self._cmd_status))
         self._app.add_handler(CommandHandler("settings", self._cmd_settings))
+        self._app.add_handler(CommandHandler("admins", self._cmd_admins))
         self._app.add_handler(CallbackQueryHandler(self._on_toggle, pattern=f"^{TOGGLE_PREFIX}"))
-        self._app.add_handler(
-            CallbackQueryHandler(self._on_fetch_method_toggle, pattern=f"^{FETCH_METHOD_PREFIX}")
-        )
         self._app.add_handler(CallbackQueryHandler(self._on_refresh_status, pattern=f"^{REFRESH_STATUS}$"))
         self._app.add_handler(CallbackQueryHandler(self._on_settings_menu, pattern=f"^{SETTINGS_MENU}$"))
         self._app.add_handler(CallbackQueryHandler(self._on_settings_category, pattern=f"^{SETTINGS_CAT_PREFIX}"))
         self._app.add_handler(CallbackQueryHandler(self._on_settings_edit, pattern=f"^{SETTINGS_EDIT_PREFIX}"))
         self._app.add_handler(CallbackQueryHandler(self._on_settings_cancel, pattern=f"^{SETTINGS_CANCEL}$"))
+        self._app.add_handler(CallbackQueryHandler(self._on_admins_menu, pattern=f"^{ADMINS_MENU}$"))
+        self._app.add_handler(CallbackQueryHandler(self._on_admin_del, pattern=f"^{ADMIN_DEL_PREFIX}"))
+        self._app.add_handler(CallbackQueryHandler(self._on_admin_add, pattern=f"^{ADMIN_ADD}$"))
+        self._app.add_handler(CallbackQueryHandler(self._on_admin_add_cancel, pattern=f"^{ADMIN_ADD_CANCEL}$"))
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text_reply))
 
     def _is_admin(self, update: Update) -> bool:
@@ -105,7 +122,8 @@ class AdminBot:
             "👋 핫딜 알림 봇 관리자 메뉴예요.\n\n"
             "/sites — 사이트별 크롤링 켜고 끄기\n"
             "/status — 실시간 현황 (추적 글 수, 마지막 성공/실패)\n"
-            "/settings — 문구/다이제스트/크롤링 설정 편집 (재배포 없이 바로 적용)\n\n"
+            "/settings — 문구/다이제스트/크롤링 설정 편집 (재배포 없이 바로 적용)\n"
+            "/admins — 메시지에 붙는 관리자 1:1 문의 버튼 추가/삭제\n\n"
             "메시지창에 '/'만 입력해도 명령어 목록이 바로 뜹니다."
         )
         await update.message.reply_text(text)
@@ -119,19 +137,8 @@ class AdminBot:
             info = report[key]
             icon = "✅" if info["enabled"] else "⛔"
             label = f"{icon} {SITE_LABELS.get(key, key)} ({info['tracked']})"
-            method = self._config.sites[key].fetch_method
-            method_label = "🌐 requests" if method == "requests" else "🎭 playwright"
-            row = [
-                InlineKeyboardButton(label, callback_data=f"{TOGGLE_PREFIX}{key}"),
-                InlineKeyboardButton(method_label, callback_data=f"{FETCH_METHOD_PREFIX}{key}"),
-            ]
-            buttons.append(row)
-        text = (
-            "🔧 사이트 관리\n켜고 싶은 사이트를 눌러주세요. 괄호 안 숫자는 현재 추적 중인 글 개수예요.\n"
-            "오른쪽 버튼으로 크롤링 방식(requests/playwright)도 바꿀 수 있어요 - requests가 막히면 "
-            "자동으로 한 번 playwright를 시도하지만, 계속 막히는 사이트는 아예 playwright로 "
-            "고정해두면 더 빠릅니다."
-        )
+            buttons.append([InlineKeyboardButton(label, callback_data=f"{TOGGLE_PREFIX}{key}")])
+        text = "🔧 사이트 관리\n켜고 싶은 사이트를 눌러주세요. 괄호 안 숫자는 현재 추적 중인 글 개수예요."
         return text, InlineKeyboardMarkup(buttons)
 
     async def _cmd_sites(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -152,24 +159,6 @@ class AdminBot:
 
         site_label = SITE_LABELS.get(site, site)
         await query.answer(f"{site_label} {'켜짐' if not current else '꺼짐'}")
-
-        text, markup = await self._build_sites_menu()
-        await query.edit_message_text(text, reply_markup=markup)
-
-    async def _on_fetch_method_toggle(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        query = update.callback_query
-        if not self._is_admin(update):
-            await query.answer("권한이 없습니다.", show_alert=True)
-            return
-
-        site = query.data[len(FETCH_METHOD_PREFIX):]
-        current = self._config.sites[site].fetch_method
-        new_method = "playwright" if current == "requests" else "requests"
-        self._config.sites[site].fetch_method = new_method
-        await self._db.set_site_fetch_method(site, new_method)
-
-        site_label = SITE_LABELS.get(site, site)
-        await query.answer(f"{site_label} 크롤링 방식: {new_method}")
 
         text, markup = await self._build_sites_menu()
         await query.edit_message_text(text, reply_markup=markup)
@@ -320,8 +309,99 @@ class AdminBot:
         await query.edit_message_text(text, reply_markup=markup)
         await query.answer("취소했습니다.")
 
+    # ---- /admins ---------------------------------------------------------
+
+    def _build_admins_menu(self) -> tuple[str, InlineKeyboardMarkup]:
+        text = (
+            "👤 관리자 문의 버튼\n각 핫딜 메시지 아래에 붙는 \"1:1 문의\" 버튼 목록입니다. "
+            "버튼을 누르면 해당 관리자와의 텔레그램 1:1 채팅이 열립니다."
+        )
+        buttons = []
+        for contact in self._admin_contacts:
+            label = f"❌ {contact.label} (@{contact.username})"
+            buttons.append([InlineKeyboardButton(label, callback_data=f"{ADMIN_DEL_PREFIX}{contact.id}")])
+        buttons.append([InlineKeyboardButton("➕ 추가", callback_data=ADMIN_ADD)])
+        return text, InlineKeyboardMarkup(buttons)
+
+    async def _cmd_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self._is_admin(update):
+            return
+        self._pending_admin_add = False
+        text, markup = self._build_admins_menu()
+        await update.message.reply_text(text, reply_markup=markup)
+
+    async def _on_admins_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if not self._is_admin(update):
+            await query.answer("권한이 없습니다.", show_alert=True)
+            return
+        self._pending_admin_add = False
+        text, markup = self._build_admins_menu()
+        await query.edit_message_text(text, reply_markup=markup)
+        await query.answer()
+
+    async def _on_admin_del(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if not self._is_admin(update):
+            await query.answer("권한이 없습니다.", show_alert=True)
+            return
+        contact_id = int(query.data[len(ADMIN_DEL_PREFIX):])
+        await self._db.remove_admin_contact(contact_id)
+        # 같은 리스트 객체를 TelegramNotifier와 공유하므로 통째로 재할당하지 않고 자리에서 수정한다.
+        self._admin_contacts[:] = [c for c in self._admin_contacts if c.id != contact_id]
+        await query.answer("삭제했습니다.")
+        text, markup = self._build_admins_menu()
+        await query.edit_message_text(text, reply_markup=markup)
+
+    async def _on_admin_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if not self._is_admin(update):
+            await query.answer("권한이 없습니다.", show_alert=True)
+            return
+        self._pending_admin_add = True
+        text = (
+            "✏️ 관리자 추가\n다음 메시지로 \"버튼에 표시할 문구|텔레그램 username\" 형식으로 "
+            "답장해주세요.\n예: 📩 문의하기|dev_jihoon"
+        )
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("❌ 취소", callback_data=ADMIN_ADD_CANCEL)]])
+        await query.edit_message_text(text, reply_markup=markup)
+        await query.answer()
+
+    async def _on_admin_add_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if not self._is_admin(update):
+            await query.answer("권한이 없습니다.", show_alert=True)
+            return
+        self._pending_admin_add = False
+        text, markup = self._build_admins_menu()
+        await query.edit_message_text(text, reply_markup=markup)
+        await query.answer("취소했습니다.")
+
     async def _on_text_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_admin(update) or not self._pending_edit:
+        if not self._is_admin(update):
+            return
+
+        if self._pending_admin_add:
+            raw = update.message.text.strip()
+            if "|" not in raw:
+                await update.message.reply_text(
+                    "형식이 안 맞습니다. \"문구|username\" 형태로 다시 보내주세요 (예: 📩 문의하기|dev_jihoon)."
+                )
+                return
+            label, username = (part.strip() for part in raw.split("|", 1))
+            username = username.lstrip("@")
+            if not label or not username:
+                await update.message.reply_text("문구와 username 둘 다 비어있으면 안 됩니다. 다시 보내주세요.")
+                return
+            contact_id = await self._db.add_admin_contact(label, username)
+            self._admin_contacts.append(AdminContact(id=contact_id, label=label, username=username))
+            self._pending_admin_add = False
+            await update.message.reply_text(f"✅ 추가했습니다: {label} (@{username})")
+            text, markup = self._build_admins_menu()
+            await update.message.reply_text(text, reply_markup=markup)
+            return
+
+        if not self._pending_edit:
             return
 
         key = self._pending_edit
@@ -356,11 +436,14 @@ class AdminBot:
             BotCommand("sites", "사이트별 크롤링 켜기/끄기"),
             BotCommand("status", "실시간 현황 보기"),
             BotCommand("settings", "문구/다이제스트/크롤링 설정 편집"),
+            BotCommand("admins", "관리자 1:1 문의 버튼 추가/삭제"),
         ]
         await self._app.bot.set_my_commands(
             commands, scope=BotCommandScopeChat(chat_id=self._admin_chat_id)
         )
-        logger.info("Admin bot polling started (/start, /sites, /status, /settings available to admin_chat_id)")
+        logger.info(
+            "Admin bot polling started (/start, /sites, /status, /settings, /admins available to admin_chat_id)"
+        )
 
     async def stop(self) -> None:
         await self._app.updater.stop()

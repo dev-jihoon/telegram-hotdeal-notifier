@@ -36,12 +36,6 @@ class SiteConfig:
     enabled: bool = True
     chat_id: int | None = None
     interval_seconds: int = 60
-    # Cloudflare 우회가 필요한 사이트(arcalive/quasarzone/damoang/zod)에서만 의미가 있다.
-    # "requests": curl_cffi/aiohttp로 빠르게 (기본값). "playwright": 실제 헤드리스
-    # 브라우저로 JS 챌린지까지 통과 - 더 느리고 무겁지만 더 강하게 막힌 경우에 필요하다.
-    # 서버 환경(IP 평판 등)에 따라 어느 쪽이 통하는지 달라질 수 있어 관리자가 /sites에서
-    # 사이트별로 직접 고를 수 있게 한다.
-    fetch_method: str = "requests"
 
 
 @dataclass

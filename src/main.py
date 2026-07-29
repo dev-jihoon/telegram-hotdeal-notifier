@@ -13,7 +13,6 @@ from telegram.request import HTTPXRequest
 from .admin_bot import AdminBot
 from .config import Config, load_config
 from .crawlers import load_all_crawlers
-from .crawlers.browser import close_browser
 from .db import Database
 from .digest import send_digest
 from .settings_registry import apply_db_overrides
@@ -140,11 +139,9 @@ async def async_main(config_path: str) -> None:
     # config.yaml은 기본값 역할만 하고, 관리자가 /settings로 한 번이라도 편집한 값은 DB에
     # 남아 재배포/재시작 이후에도 계속 우선 적용된다.
     await apply_db_overrides(config, db)
-    # 사이트별 크롤링 방식(requests/playwright)도 관리자가 /sites에서 바꾸면 DB에 남는다.
-    for key in config.sites:
-        stored_method = await db.get_site_fetch_method(key)
-        if stored_method:
-            config.sites[key].fetch_method = stored_method
+    # TelegramNotifier와 AdminBot이 같은 리스트 객체를 공유한다 - /admins로 추가/삭제하면
+    # 재시작 없이 바로 다음 메시지부터 반영된다.
+    admin_contacts = await db.get_admin_contacts()
 
     # 사이트 크롤 루프 9개가 봇 인스턴스 하나를 동시에 공유하는데, python-telegram-bot의
     # 기본 연결 풀 크기는 1이라 여러 사이트가 동시에 전송을 시도하면 나머지가 1초 만에
@@ -165,7 +162,9 @@ async def async_main(config_path: str) -> None:
     elif config.webapp.enabled and config.webapp.public_url:
         channel_webapp_link = config.webapp.public_url
 
-    notifier = TelegramNotifier(bot, config.display, webapp_link=channel_webapp_link)
+    notifier = TelegramNotifier(
+        bot, config.display, webapp_link=channel_webapp_link, admin_contacts=admin_contacts
+    )
 
     crawlers = load_all_crawlers(config)
     failures = FailureTracker(
@@ -178,6 +177,7 @@ async def async_main(config_path: str) -> None:
         db,
         [crawler.site_key for crawler in crawlers],
         config,
+        admin_contacts,
     )
     await admin_bot.start()
 
@@ -236,7 +236,6 @@ async def async_main(config_path: str) -> None:
             await webapp_runner.cleanup()
         await admin_bot.stop()
         await db.close()
-        await close_browser()
 
 
 def main() -> None:

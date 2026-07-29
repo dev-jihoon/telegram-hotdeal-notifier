@@ -56,9 +56,6 @@ sites:
   arcalive:
     enabled: true
     interval_seconds: 60
-    # fetch_method: "playwright"       # Cloudflare가 이 서버 IP만 챌린지로 막는 경우 이걸로
-    # 바꾸세요 (기본은 "requests" - curl_cffi/aiohttp로 더 가볍고 빠름). 관리자 /sites에서도
-    # 재배포 없이 바로 바꿀 수 있습니다.
   fmkorea:
     enabled: true
     interval_seconds: 60
@@ -71,17 +68,16 @@ sites:
   quasarzone:
     # Cloudflare 봇 차단이 걸려있어 curl_cffi(브라우저 위장)로 우회합니다.
     # 대부분의 환경에서 잘 동작하지만, 서버 IP 평판에 따라 막힐 수 있습니다.
-    # 계속 막히면 fetch_method: "playwright"로 바꿔보거나(위 아카라이브 설명 참고),
-    # enabled: false로 끄고 다른 사이트만 사용하세요.
+    # 계속 막히면 enabled: false로 끄고 다른 사이트만 사용하세요.
     enabled: true
     interval_seconds: 90
   zod:
-    # 퀘이사존보다 Cloudflare 차단이 더 강해서(curl_cffi 흉내로는 거의 항상 막힘) 기본값을
-    # playwright(실제 헤드리스 브라우저)로 둡니다. Dockerfile이 자동으로 Chromium을
-    # 설치합니다. 더 가벼운 "requests"로 시도해보고 싶으면 fetch_method를 바꾸세요.
+    # 퀘이사존과 마찬가지로 Cloudflare 우회(curl_cffi)를 사용합니다. Cloudflare 설정이
+    # 더 엄격한 사이트라 curl_cffi로도 계속 막히는 경우가 있습니다 - 그럴 땐
+    # enabled: false로 꺼두세요 (헤드리스 브라우저로 뚫는 시도는 해봤지만 이 사이트의
+    # 차단 수준에서는 효과가 없어서 requests 방식 하나로 유지합니다).
     enabled: true
     interval_seconds: 90
-    fetch_method: "playwright"
 
   # 사이트 추가 예시 — src/crawlers/<site>.py 에 BaseCrawler 구현 +
   # @register_crawler("<site>") 등록 후, 여기에 동일한 키로 항목만 추가하면 됩니다.
