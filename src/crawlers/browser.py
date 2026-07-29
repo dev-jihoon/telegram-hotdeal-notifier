@@ -85,23 +85,43 @@ async def close_browser() -> None:
         _playwright = None
 
 
-async def browser_get(url: str, timeout: int = 20) -> tuple[int, str]:
+async def browser_get(url: str, timeout: int = 20, challenge_wait: int = 40) -> tuple[int, str]:
     """실제 브라우저(Firefox)로 JS를 실행해 Cloudflare 챌린지를 통과한 뒤 HTML을 가져온다.
 
     curl_cffi(TLS/HTTP2 핑거프린트 흉내)로는 못 뚫는 "Just a moment..." 류의 JS 챌린지가
-    걸린 사이트(zod)용. 챌린지는 몇 초 안에 클라이언트 사이드에서 자동으로 풀리므로,
-    페이지 타이틀이 챌린지 문구에서 벗어날 때까지 잠깐 기다린다.
+    걸린 사이트(zod)용. 챌린지는 클라이언트 사이드에서 자동으로 풀리는 경우가 많아 페이지
+    타이틀이 챌린지 문구에서 벗어날 때까지 기다리고(내비게이션 타임아웃보다 넉넉하게),
+    체크박스 클릭이 필요한 Turnstile 위젯이면 최선을 다해 클릭도 시도한다(닫힌 shadow DOM
+    안에 있어 대부분 실패하지만, 되는 경우도 있어 시도 자체는 해본다).
     """
     context = await _get_context()
     page = await context.new_page()
     try:
         response = await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
         status = response.status if response else 0
-        for _ in range(int(timeout)):
+
+        title = await page.title()
+        if any(marker in title for marker in _CHALLENGE_TITLE_MARKERS):
+            try:
+                await page.frame_locator("iframe[src*='challenges.cloudflare.com']").locator(
+                    "input[type=checkbox]"
+                ).click(timeout=3000)
+                logger.info("clicked a Turnstile checkbox for %s", url)
+            except Exception:
+                pass
+
+        for _ in range(int(challenge_wait)):
             title = await page.title()
             if not any(marker in title for marker in _CHALLENGE_TITLE_MARKERS):
                 break
             await page.wait_for_timeout(1000)
+        else:
+            logger.info("challenge for %s did not clear within %ds", url, challenge_wait)
+
+        try:
+            await page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass
         html = await page.content()
     finally:
         await page.close()
