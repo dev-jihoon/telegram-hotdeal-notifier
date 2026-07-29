@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 from typing import Awaitable, Callable
 
 from playwright.async_api import Browser, BrowserContext, Playwright, async_playwright
 
 logger = logging.getLogger(__name__)
+
+# 관리자가 실제로 챌린지를 통과한 브라우저(webtop 등)에서 뽑아낸 cf_clearance 쿠키를 여기
+# 놓아두면 시작할 때 우리 브라우저 세션에 그대로 주입한다 - "한 번도 안 본 방문자"가 아니라
+# "이미 통과한 세션"으로 시작하는 효과를 노린다. 파일이 없으면 그냥 건너뛴다(선택 사항).
+_CF_COOKIES_PATH = os.environ.get("CF_COOKIES_PATH", "data/cf_cookies.json")
 
 # Cloudflare JS 챌린지 타이틀(클라이언트 사이드에서 몇 초 안에 자동으로 풀림) - 브라우저
 # locale을 ko-KR로 설정해두면 이 페이지 자체가 한국어로 내려온다("잠시만 기다리십시오…").
@@ -63,8 +70,21 @@ async def _get_context() -> BrowserContext:
                 user_agent=_UA, locale="ko-KR", viewport={"width": 1920, "height": 1080}
             )
             await _context.add_init_script(_STEALTH_INIT_SCRIPT)
+            await _load_cf_cookies(_context)
             logger.info("playwright firefox browser+context launched (headed via Xvfb, persistent)")
     return _context
+
+
+async def _load_cf_cookies(context: BrowserContext) -> None:
+    if not os.path.exists(_CF_COOKIES_PATH):
+        return
+    try:
+        with open(_CF_COOKIES_PATH, encoding="utf-8") as f:
+            cookies = json.load(f)
+        await context.add_cookies(cookies)
+        logger.info("loaded %d cf_clearance cookie(s) from %s", len(cookies), _CF_COOKIES_PATH)
+    except Exception:
+        logger.exception("failed to load cf cookies from %s", _CF_COOKIES_PATH)
 
 
 async def close_browser() -> None:
