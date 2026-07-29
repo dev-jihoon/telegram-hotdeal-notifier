@@ -20,4 +20,4 @@ COPY static ./static
 ENV CONFIG_PATH=/app/config.yaml
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "-m", "src.main"]
+CMD ["xvfb-run", "-a", "python", "-m", "src.main"]

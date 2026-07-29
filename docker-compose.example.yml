@@ -2,6 +2,7 @@ services:
   hotdeal-bot:
     build: .
     restart: unless-stopped
+    init: true  # Xvfb+브라우저 프로세스가 좀비 없이 정리되도록 PID 1을 tini가 맡는다
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/app/data
