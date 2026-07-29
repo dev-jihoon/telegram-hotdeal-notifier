@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 
 from ..models import Article, ArticleStatus
 from .base import DEFAULT_HEADERS, BaseCrawler
-from .browser import browser_get
+from .browser import get_with_fallback
 from .registry import register_crawler
 
 BASE_URL = "https://arca.live"
@@ -16,14 +16,16 @@ LIST_URL = BASE_URL + "/b/hotdeal?p={page}"
 ARTICLE_RE = re.compile(r"/b/([\w\d]+)/(\d+)")
 
 
-async def _get(fetch_method: str, url: str) -> tuple[int, str]:
-    # 서버 IP에 따라 Cloudflare가 아카라이브에 챌린지를 걸기도 해서(curl_cffi 흉내로는
-    # 못 뚫음), 그런 환경에서는 관리자가 /sites에서 playwright로 바꿀 수 있게 한다.
-    if fetch_method == "playwright":
-        return await browser_get(url)
+async def _requests_get(url: str) -> tuple[int, str]:
     async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             return resp.status, await resp.text(errors="replace")
+
+
+async def _get(fetch_method: str, url: str) -> tuple[int, str]:
+    # 서버 IP에 따라 Cloudflare가 아카라이브에 챌린지를 걸기도 해서(curl_cffi 흉내로는
+    # 못 뚫음) - requests 모드에서 차단이 감지되면 자동으로 playwright로 폴백한다.
+    return await get_with_fallback(fetch_method, url, _requests_get)
 
 
 @register_crawler("arcalive")

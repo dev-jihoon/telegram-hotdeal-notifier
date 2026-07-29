@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 
 from ..models import Article, ArticleStatus
 from .base import BaseCrawler
-from .browser import browser_get
+from .browser import get_with_fallback
 from .cf_bypass import cf_get
 from .registry import register_crawler
 
@@ -17,12 +17,11 @@ END_KEYWORDS = ("품절", "종료", "매진", "마감")
 
 
 async def _get(fetch_method: str, url: str) -> tuple[int, str]:
-    # zod는 curl_cffi(TLS 흉내)로는 못 뚫는 Cloudflare JS 챌린지가 자주 걸려서 기본값은
-    # playwright(실제 헤드리스 브라우저)다. 나중에 차단이 풀리면 관리자가 /sites에서
-    # 더 가볍고 빠른 requests(curl_cffi)로 다시 바꿔볼 수 있게 남겨둔다.
-    if fetch_method == "playwright":
-        return await browser_get(url)
-    return await cf_get(url)
+    # zod는 curl_cffi(TLS 흉내)로는 못 뚫는 Cloudflare JS 챌린지가 자주 걸려서, "requests"
+    # 모드라도 차단이 감지되면 자동으로 playwright(실제 헤드리스 브라우저)로 폴백한다.
+    # 기본 설정은 아예 처음부터 playwright로 시작해 그 첫 시도조차 아끼지만, config.yaml에
+    # 이 필드가 없어 "requests"로 남아있어도 자동 폴백 덕분에 결국 playwright로 성공한다.
+    return await get_with_fallback(fetch_method, url, cf_get)
 
 
 @register_crawler("zod")

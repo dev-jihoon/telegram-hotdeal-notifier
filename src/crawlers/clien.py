@@ -6,23 +6,42 @@ from bs4 import BeautifulSoup
 from ..models import Article, ArticleStatus
 from ..price import extract_mall, extract_price
 from .base import DEFAULT_HEADERS, BaseCrawler
+from .browser import get_with_fallback
 from .registry import register_crawler
 
 BASE_URL = "https://www.clien.net"
 LIST_URL = BASE_URL + "/service/board/jirum"
 
 
+async def _requests_get(url: str) -> tuple[int, str]:
+    async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            return resp.status, await resp.text(errors="replace")
+
+
+async def _get(fetch_method: str, url: str) -> tuple[int, str]:
+    return await get_with_fallback(fetch_method, url, _requests_get)
+
+
 @register_crawler("clien")
 class ClienCrawler(BaseCrawler):
     async def fetch(self) -> list[Article]:
         articles: list[Article] = []
-        async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
-            for page in range(self.crawl_config.listing_pages):
-                url = LIST_URL if page == 0 else f"{LIST_URL}?po={page}"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    html = await resp.text(errors="replace")
-                articles.extend(_parse_listing(html))
+        for page in range(self.crawl_config.listing_pages):
+            url = LIST_URL if page == 0 else f"{LIST_URL}?po={page}"
+            status, html = await _get(self.site_config.fetch_method, url)
+            if status != 200:
+                continue
+            articles.extend(_parse_listing(html))
         return articles
+
+    async def check_exists(self, article_url: str) -> bool:
+        # 클리앙은 삭제/존재하지 않는 글에 확실한 404를 준다 (직접 확인함).
+        try:
+            status, _ = await _get(self.site_config.fetch_method, article_url)
+        except Exception:
+            return True
+        return status != 404
 
 
 def _parse_listing(html: str) -> list[Article]:

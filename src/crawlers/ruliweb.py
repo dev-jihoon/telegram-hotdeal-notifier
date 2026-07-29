@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 from ..models import Article, ArticleStatus
 from ..price import extract_mall, extract_price
 from .base import DEFAULT_HEADERS, BaseCrawler
+from .browser import get_with_fallback
 from .registry import register_crawler
 
 BASE_URL = "https://bbs.ruliweb.com"
@@ -14,16 +15,25 @@ END_KEYWORDS = ("품절", "종료", "매진", "마감")
 NOT_FOUND_MARKER = "게시글이 없습니다"
 
 
+async def _requests_get(url: str) -> tuple[int, str]:
+    async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            return resp.status, await resp.text(errors="replace")
+
+
+async def _get(fetch_method: str, url: str) -> tuple[int, str]:
+    return await get_with_fallback(fetch_method, url, _requests_get)
+
+
 @register_crawler("ruliweb")
 class RuliwebCrawler(BaseCrawler):
     async def fetch(self) -> list[Article]:
         articles: list[Article] = []
-        async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
-            for page in range(1, self.crawl_config.listing_pages + 1):
-                url = LIST_URL.format(page=page)
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    html = await resp.text(errors="replace")
-                articles.extend(_parse_listing(html))
+        for page in range(1, self.crawl_config.listing_pages + 1):
+            status, html = await _get(self.site_config.fetch_method, LIST_URL.format(page=page))
+            if status != 200:
+                continue
+            articles.extend(_parse_listing(html))
         return articles
 
     async def check_exists(self, article_url: str) -> bool:
@@ -33,17 +43,13 @@ class RuliwebCrawler(BaseCrawler):
         # 받아지는 등 어떤 이유로든 셀렉터가 안 걸리면 살아있는 글도 삭제로 오판하게
         # 된다. 확실한 마커 문구가 있을 때만 삭제로 보는 negative-signal 방식이 더 안전하다.
         try:
-            async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
-                async with session.get(
-                    article_url, timeout=aiohttp.ClientTimeout(total=10)
-                ) as resp:
-                    # 일시적 오류(5xx, 429 등)를 삭제로 오판하지 않도록 404만 확정 삭제로 본다.
-                    if resp.status == 404:
-                        return False
-                    if resp.status != 200:
-                        return True
-                    html = await resp.text(errors="replace")
+            status, html = await _get(self.site_config.fetch_method, article_url)
         except Exception:
+            return True
+        # 일시적 오류(5xx, 429 등)를 삭제로 오판하지 않도록 404만 확정 삭제로 본다.
+        if status == 404:
+            return False
+        if status != 200:
             return True
         return NOT_FOUND_MARKER not in html
 

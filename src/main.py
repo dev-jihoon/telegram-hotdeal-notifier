@@ -11,7 +11,7 @@ from telegram import Bot, MenuButtonWebApp, WebAppInfo
 from telegram.request import HTTPXRequest
 
 from .admin_bot import AdminBot
-from .config import Config, DUAL_FETCH_SITES, load_config
+from .config import Config, load_config
 from .crawlers import load_all_crawlers
 from .crawlers.browser import close_browser
 from .db import Database
@@ -142,10 +142,9 @@ async def async_main(config_path: str) -> None:
     await apply_db_overrides(config, db)
     # 사이트별 크롤링 방식(requests/playwright)도 관리자가 /sites에서 바꾸면 DB에 남는다.
     for key in config.sites:
-        if key in DUAL_FETCH_SITES:
-            stored_method = await db.get_site_fetch_method(key)
-            if stored_method:
-                config.sites[key].fetch_method = stored_method
+        stored_method = await db.get_site_fetch_method(key)
+        if stored_method:
+            config.sites[key].fetch_method = stored_method
 
     # 사이트 크롤 루프 9개가 봇 인스턴스 하나를 동시에 공유하는데, python-telegram-bot의
     # 기본 연결 풀 크기는 1이라 여러 사이트가 동시에 전송을 시도하면 나머지가 1초 만에

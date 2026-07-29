@@ -13,7 +13,7 @@ from telegram.ext import (
     filters,
 )
 
-from .config import Config, DUAL_FETCH_SITES
+from .config import Config
 from .db import Database
 from .settings_registry import (
     CATEGORY_LABELS,
@@ -119,16 +119,18 @@ class AdminBot:
             info = report[key]
             icon = "✅" if info["enabled"] else "⛔"
             label = f"{icon} {SITE_LABELS.get(key, key)} ({info['tracked']})"
-            row = [InlineKeyboardButton(label, callback_data=f"{TOGGLE_PREFIX}{key}")]
-            if key in DUAL_FETCH_SITES:
-                method = self._config.sites[key].fetch_method
-                method_label = "🌐 requests" if method == "requests" else "🎭 playwright"
-                row.append(InlineKeyboardButton(method_label, callback_data=f"{FETCH_METHOD_PREFIX}{key}"))
+            method = self._config.sites[key].fetch_method
+            method_label = "🌐 requests" if method == "requests" else "🎭 playwright"
+            row = [
+                InlineKeyboardButton(label, callback_data=f"{TOGGLE_PREFIX}{key}"),
+                InlineKeyboardButton(method_label, callback_data=f"{FETCH_METHOD_PREFIX}{key}"),
+            ]
             buttons.append(row)
         text = (
             "🔧 사이트 관리\n켜고 싶은 사이트를 눌러주세요. 괄호 안 숫자는 현재 추적 중인 글 개수예요.\n"
-            "Cloudflare 우회가 필요한 사이트는 오른쪽 버튼으로 크롤링 방식(requests/playwright)도 "
-            "바꿀 수 있어요 - 서버 IP에 따라 어느 쪽이 통하는지 다를 수 있습니다."
+            "오른쪽 버튼으로 크롤링 방식(requests/playwright)도 바꿀 수 있어요 - requests가 막히면 "
+            "자동으로 한 번 playwright를 시도하지만, 계속 막히는 사이트는 아예 playwright로 "
+            "고정해두면 더 빠릅니다."
         )
         return text, InlineKeyboardMarkup(buttons)
 

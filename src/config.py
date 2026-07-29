@@ -73,10 +73,6 @@ class DisplayConfig:
     digest_mall_ranking_label: str = "🏪 오늘의 인기 쇼핑몰"
 
 
-# Cloudflare 우회가 필요해서 requests(curl_cffi)/playwright 중 고를 수 있는 사이트들.
-DUAL_FETCH_SITES = frozenset({"arcalive", "quasarzone", "damoang", "zod"})
-
-
 @dataclass
 class Config:
     telegram: TelegramConfig

@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 from ..models import Article, ArticleStatus
 from ..price import extract_mall, extract_price
 from .base import BaseCrawler
-from .browser import browser_get
+from .browser import get_with_fallback
 from .cf_bypass import cf_get
 from .registry import register_crawler
 
@@ -18,9 +18,8 @@ STATUS_MAP = {"종료": ArticleStatus.ENDED, "품절": ArticleStatus.SOLDOUT}
 
 
 async def _get(fetch_method: str, url: str) -> tuple[int, str]:
-    if fetch_method == "playwright":
-        return await browser_get(url)
-    return await cf_get(url)
+    # requests(curl_cffi) 모드에서 차단이 감지되면 자동으로 playwright로 폴백한다.
+    return await get_with_fallback(fetch_method, url, cf_get)
 
 
 @register_crawler("damoang")

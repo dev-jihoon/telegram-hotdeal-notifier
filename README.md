@@ -174,16 +174,22 @@ server {
   정규식으로 가격을 추출하므로 100% 정확하지 않을 수 있습니다.
 - **카테고리**: 사이트가 카테고리/분류를 제공하는 경우에만 표시됩니다(다모앙, zod는 목록에서
   카테고리를 제공하지 않아 항상 생략됩니다).
-- **아카라이브/퀘이사존/다모앙/zod**: Cloudflare 봇 차단 대상이라 요청 방식을 사이트별로 고를
-  수 있습니다 (`sites.<key>.fetch_method`, 또는 관리자 `/sites`에서 재배포 없이 바로 전환).
-  - `"requests"`(기본값): 브라우저 TLS/HTTP2 핑거프린트를 흉내내는 `curl_cffi`(아카라이브는
-    일반 aiohttp)로 우회 - 빠르고 가볍지만, 서버 IP 평판에 따라 막힐 수 있습니다
-    (`cf-mitigated: challenge` 응답이나 403이 계속 오면 이 경우입니다).
-  - `"playwright"`: 실제로 JS를 실행하는 헤드리스 브라우저(Chromium)로 접근합니다
-    (`src/crawlers/browser.py`) - "requests"가 못 뚫는 JS 챌린지("Just a moment...")까지
-    통과하지만, 그만큼 이미지가 커지고(Chromium 바이너리 포함) 메모리도 더 씁니다. Docker
-    빌드 시 `playwright install --with-deps chromium`이 자동 실행됩니다.
-  - zod는 `curl_cffi` 흉내로는 거의 항상 막혀서 기본값이 `"playwright"`입니다. 둘 다 계속
+- **모든 사이트 - 요청 방식 선택**: 사이트별로 요청 방식을 고를 수 있습니다
+  (`sites.<key>.fetch_method`, 또는 관리자 `/sites`에서 재배포 없이 바로 전환).
+  - `"requests"`(기본값): 가볍고 빠른 방식(아카라이브/퀘이사존/다모앙/zod는 `curl_cffi`로
+    Cloudflare TLS/HTTP2 핑거프린트 우회, 나머지는 일반 aiohttp). 차단된 것으로 보이면
+    (403/430, `cf-mitigated: challenge`, 코올엔조이의 IP 차단 안내문 등) **관리자가 손대지
+    않아도 그 요청 한 번만 자동으로 playwright로 폴백**합니다.
+  - `"playwright"`: 처음부터 헤드리스 브라우저로 접근합니다 (`src/crawlers/browser.py`) -
+    항상 차단되는 사이트는 이걸로 고정해두면 매번 requests를 먼저 시도했다가 실패하는
+    낭비가 없어 더 빠릅니다.
+  - 브라우저 엔진은 Firefox를 씁니다. 처음엔 Chromium을 썼는데, Cloudflare가 Playwright의
+    CDP 기반 Chromium 자동화 특유의 신호(`navigator.webdriver`, headless 전용 렌더링 신호
+    등)를 탐지해 계속 막는 사례가 있었고, 같은 서버에서 실제 Firefox로는 접속이 됐습니다 -
+    Playwright가 Firefox는 CDP가 아닌 별도 프로토콜로 제어해서 그 탐지를 피합니다. 그래도
+    이미지가 커지고(브라우저 바이너리 포함) 메모리도 더 씁니다 - Docker 빌드 시
+    `playwright install --with-deps firefox`가 자동 실행됩니다.
+  - zod는 `curl_cffi` 흉내로는 거의 항상 막혀서 기본값이 `"playwright"`입니다. 그래도 계속
     막히면 `enabled: false`로 끄세요.
 - **에펨코리아**: 자체 "보안 시스템"이 있어 짧은 시간에 반복 요청하면 일시적으로 430 응답을
   돌려줄 수 있습니다. `interval_seconds`를 너무 짧게 잡지 마세요(기본값 60초 이상 권장).
