@@ -21,19 +21,11 @@ _CHALLENGE_TITLE_MARKERS = ("Just a moment", "잠시만 기다리십시오")
 # 겹치지 않도록 확인된 값만 넣는다.
 _BLOCK_MARKERS = (*_CHALLENGE_TITLE_MARKERS, "Access Denied", "Attention Required", "차단된 아이피")
 
-# Playwright의 Chromium/Firefox 번들은 자동화 전용으로 패치된 특수 빌드라(Firefox는 Juggler
-# 프로토콜을 넣으려고, Chromium은 "Chromium for Testing") 실제 배포판 브라우저와 TLS 스택/빌드
-# 자체가 미묘하게 다를 수 있다 - 관리자가 서버에서 webtop의 "진짜" Firefox로는 성공했는데
-# Playwright Firefox(headless/headed 둘 다, 스텔스 패치 포함)로는 계속 막혀서 이 가능성이
-# 유력해졌다. Firefox는 구조상 Playwright가 시스템에 깔린 진짜 바이너리를 못 쓰지만(Juggler가
-# 그 바이너리에 내장돼 있어야 함), Chromium 계열은 channel="chrome"으로 실제 설치된 Google
-# Chrome(수백만 명이 쓰는 바로 그 바이너리)을 직접 조종할 수 있어 이걸로 바꾼다 - TLS/브랜드
-# 지문이 진짜와 100% 일치한다. User-Agent는 실제 설치된 Chrome이 스스로 정확하게 보고하므로
-# 따로 흉내내지 않는다(가짜 UA를 덮어씌우면 오히려 내부 버전 정보와 안 맞아 더 의심스럽다).
-#
-# "진짜 창모드"(headless=False + Xvfb) 시도는 컨테이너에서 xvfb-run이 원인 불명으로 멈춰버려
-# (xauth를 넣어도 재현) 포기했다 - 대신 headless 상태에서 자동화 지문을 최대한 지우는
-# 스텔스 패치(_STEALTH_INIT_SCRIPT)로 접근한다.
+# 서버가 ARM64라 실제 Google Chrome(x86_64 전용 공식 빌드)은 애초에 설치가 안 된다.
+# headless Firefox/Chromium 둘 다(스텔스 패치 포함) 계속 차단당했고, 관리자가 같은 서버에서
+# webtop의 "진짜 창모드" Firefox로는 성공한 걸 근거로 headless=False(Xvfb 가상 디스플레이)로
+# 다시 시도한다 - 이번엔 Xvfb 자체를 컨테이너에서 직접 인터랙티브하게 확인한 뒤 반영한다.
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
 
 # 자동화 브라우저임을 드러내는 흔한 신호들을 실제 브라우저처럼 보이게 지운다.
 _STEALTH_INIT_SCRIPT = """
@@ -66,14 +58,12 @@ async def _get_context() -> BrowserContext:
     async with _init_lock:
         if _context is None:
             _playwright = await async_playwright().start()
-            _browser = await _playwright.chromium.launch(
-                headless=True,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
+            _browser = await _playwright.firefox.launch(headless=False)
+            _context = await _browser.new_context(
+                user_agent=_UA, locale="ko-KR", viewport={"width": 1920, "height": 1080}
             )
-            _context = await _browser.new_context(locale="ko-KR", viewport={"width": 1920, "height": 1080})
             await _context.add_init_script(_STEALTH_INIT_SCRIPT)
-            logger.info("playwright real Google Chrome browser+context launched (headless, persistent)")
+            logger.info("playwright firefox browser+context launched (headed via Xvfb, persistent)")
     return _context
 
 
