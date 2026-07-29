@@ -7,6 +7,7 @@
 
   const listEl = document.getElementById("deal-list");
   const statusEl = document.getElementById("status");
+  let emptyMessage = "오늘 올라온 핫딜이 아직 없습니다.";
 
   function escapeHtml(str) {
     const div = document.createElement("div");
@@ -63,9 +64,19 @@
         throw new Error(`HTTP ${res.status}`);
       }
       const data = await res.json();
+      if (data.meta) {
+        if (data.meta.title) {
+          document.title = data.meta.title;
+          const headerEl = document.querySelector(".app-header h1");
+          if (headerEl) headerEl.textContent = data.meta.title;
+        }
+        if (data.meta.empty_message) {
+          emptyMessage = data.meta.empty_message;
+        }
+      }
       listEl.innerHTML = "";
       if (!data.deals || data.deals.length === 0) {
-        statusEl.textContent = "오늘 올라온 핫딜이 아직 없습니다.";
+        statusEl.textContent = emptyMessage;
         listEl.appendChild(statusEl);
         return;
       }

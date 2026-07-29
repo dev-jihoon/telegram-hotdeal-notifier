@@ -4,15 +4,16 @@ import hashlib
 import hmac
 import logging
 import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl
 
 from aiohttp import web
 
+from .config import DisplayConfig
 from .db import Database
 from .price import parse_won
 from .telegram_notifier import SITE_LABELS
+from .time_utils import start_of_today_kst_iso
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def validate_init_data(init_data: str, bot_token: str, max_age_seconds: int = IN
     return hmac.compare_digest(computed_hash, received_hash)
 
 
-def _serialize(article, old_price: str | None) -> dict:
+def _serialize(article, old_price: str | None, show_site_name: bool) -> dict:
     discount_pct = None
     if old_price and article.price:
         old_won = parse_won(old_price)
@@ -60,7 +61,7 @@ def _serialize(article, old_price: str | None) -> dict:
             discount_pct = round((old_won - new_won) / old_won * 100)
     return {
         "site": article.site,
-        "site_label": SITE_LABELS.get(article.site, article.site),
+        "site_label": SITE_LABELS.get(article.site, article.site) if show_site_name else None,
         "title": article.title,
         "url": article.url,
         "price": article.price,
@@ -73,7 +74,7 @@ def _serialize(article, old_price: str | None) -> dict:
     }
 
 
-def create_app(db: Database, bot_token: str) -> web.Application:
+def create_app(db: Database, bot_token: str, display: DisplayConfig) -> web.Application:
     app = web.Application()
 
     async def index(request: web.Request) -> web.Response:
@@ -84,11 +85,21 @@ def create_app(db: Database, bot_token: str) -> web.Application:
         if not validate_init_data(init_data, bot_token):
             return web.json_response({"error": "invalid init data"}, status=403)
 
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        # 자정을 걸치는 롤링 24시간이 아니라, 달력상 오늘(KST) 올라온 글만 대상으로 한다.
+        cutoff = start_of_today_kst_iso()
         articles = await db.get_top_articles_since(cutoff, DEALS_LIMIT)
         old_prices = await db.get_latest_old_prices([(a.site, a.article_id) for a in articles])
-        deals = [_serialize(a, old_prices.get((a.site, a.article_id))) for a in articles]
-        return web.json_response({"deals": deals})
+        deals = [
+            _serialize(a, old_prices.get((a.site, a.article_id)), display.show_site_name)
+            for a in articles
+        ]
+        return web.json_response({
+            "deals": deals,
+            "meta": {
+                "title": display.webapp_title,
+                "empty_message": display.webapp_empty_message,
+            },
+        })
 
     app.router.add_get("/", index)
     app.router.add_get("/api/deals", api_deals)
@@ -96,8 +107,8 @@ def create_app(db: Database, bot_token: str) -> web.Application:
     return app
 
 
-async def start_webapp(db: Database, bot_token: str, port: int) -> web.AppRunner:
-    app = create_app(db, bot_token)
+async def start_webapp(db: Database, bot_token: str, port: int, display: DisplayConfig) -> web.AppRunner:
+    app = create_app(db, bot_token, display)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)

@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from ..models import Article, ArticleStatus
 from ..price import extract_mall, extract_price
 from .base import BaseCrawler
+from .browser import browser_get
 from .cf_bypass import cf_get
 from .registry import register_crawler
 
@@ -16,12 +17,18 @@ ARTICLE_ID_RE = re.compile(r"/(\d+)$")
 STATUS_MAP = {"종료": ArticleStatus.ENDED, "품절": ArticleStatus.SOLDOUT}
 
 
+async def _get(fetch_method: str, url: str) -> tuple[int, str]:
+    if fetch_method == "playwright":
+        return await browser_get(url)
+    return await cf_get(url)
+
+
 @register_crawler("damoang")
 class DamoangCrawler(BaseCrawler):
     async def fetch(self) -> list[Article]:
         articles: list[Article] = []
         for page in range(1, self.crawl_config.listing_pages + 1):
-            status, html = await cf_get(LIST_URL.format(page=page))
+            status, html = await _get(self.site_config.fetch_method, LIST_URL.format(page=page))
             if status != 200:
                 continue
             articles.extend(_parse_listing(html))
@@ -31,7 +38,7 @@ class DamoangCrawler(BaseCrawler):
         # Cloudflare 우회가 일시적으로 실패하는 경우(403 등)를 삭제로 오판하지 않도록
         # 404만 확정 삭제로 본다.
         try:
-            status, _ = await cf_get(article_url)
+            status, _ = await _get(self.site_config.fetch_method, article_url)
         except Exception:
             return True
         return status != 404

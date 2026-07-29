@@ -11,10 +11,12 @@ from telegram import Bot, MenuButtonWebApp, WebAppInfo
 from telegram.request import HTTPXRequest
 
 from .admin_bot import AdminBot
-from .config import Config, load_config
+from .config import Config, DUAL_FETCH_SITES, load_config
 from .crawlers import load_all_crawlers
+from .crawlers.browser import close_browser
 from .db import Database
 from .digest import send_digest
+from .settings_registry import apply_db_overrides
 from .singleton_lock import acquire_singleton_lock
 from .sync import purge_expired, sync_site
 from .telegram_notifier import SITE_LABELS, TelegramNotifier
@@ -91,11 +93,11 @@ async def run_site_loop(
         await asyncio.sleep(interval)
 
 
-async def run_retention_loop(db: Database, retention_days: int) -> None:
+async def run_retention_loop(db: Database, config: Config) -> None:
     while True:
         await asyncio.sleep(3600)
         try:
-            await purge_expired(db, retention_days)
+            await purge_expired(db, config.crawl.retention_days)
         except Exception:
             logger.exception("retention cleanup failed")
 
@@ -108,20 +110,21 @@ def _seconds_until_next(hour: int, minute: int) -> float:
     return (target - now).total_seconds()
 
 
-async def run_digest_loop(
-    db: Database,
-    notifier: TelegramNotifier,
-    chat_id: int,
-    hour: int,
-    minute: int,
-    top_n: int,
-) -> None:
+async def run_digest_loop(db: Database, notifier: TelegramNotifier, config: Config) -> None:
+    # 매번 config.digest에서 새로 읽는다 - 관리자가 /settings로 시간/on-off를 바꾸면
+    # 재시작 없이 다음 대기 시점부터 바로 반영된다.
     while True:
-        wait_seconds = _seconds_until_next(hour, minute)
+        if not config.digest.enabled:
+            await asyncio.sleep(60)
+            continue
+        wait_seconds = _seconds_until_next(config.digest.hour, config.digest.minute)
         logger.info("digest scheduled in %.0f minutes", wait_seconds / 60)
         await asyncio.sleep(wait_seconds)
+        if not config.digest.enabled:
+            continue
+        chat_id = config.digest.chat_id or config.telegram.default_chat_id
         try:
-            await send_digest(db, notifier, chat_id, top_n)
+            await send_digest(db, notifier, chat_id, config.digest.top_n, config.display)
         except Exception:
             logger.exception("digest send failed")
         await asyncio.sleep(60)  # 같은 분 안에서 즉시 재실행되는 것 방지
@@ -134,6 +137,15 @@ async def async_main(config_path: str) -> None:
     db = Database(config.database.path)
     await db.connect()
     await db.seed_site_state({key: site.enabled for key, site in config.sites.items()})
+    # config.yaml은 기본값 역할만 하고, 관리자가 /settings로 한 번이라도 편집한 값은 DB에
+    # 남아 재배포/재시작 이후에도 계속 우선 적용된다.
+    await apply_db_overrides(config, db)
+    # 사이트별 크롤링 방식(requests/playwright)도 관리자가 /sites에서 바꾸면 DB에 남는다.
+    for key in config.sites:
+        if key in DUAL_FETCH_SITES:
+            stored_method = await db.get_site_fetch_method(key)
+            if stored_method:
+                config.sites[key].fetch_method = stored_method
 
     # 사이트 크롤 루프 9개가 봇 인스턴스 하나를 동시에 공유하는데, python-telegram-bot의
     # 기본 연결 풀 크기는 1이라 여러 사이트가 동시에 전송을 시도하면 나머지가 1초 만에
@@ -154,7 +166,7 @@ async def async_main(config_path: str) -> None:
     elif config.webapp.enabled and config.webapp.public_url:
         channel_webapp_link = config.webapp.public_url
 
-    notifier = TelegramNotifier(bot, webapp_link=channel_webapp_link)
+    notifier = TelegramNotifier(bot, config.display, webapp_link=channel_webapp_link)
 
     crawlers = load_all_crawlers(config)
     failures = FailureTracker(
@@ -166,12 +178,13 @@ async def async_main(config_path: str) -> None:
         config.telegram.admin_chat_id,
         db,
         [crawler.site_key for crawler in crawlers],
+        config,
     )
     await admin_bot.start()
 
     webapp_runner = None
     if config.webapp.enabled:
-        webapp_runner = await start_webapp(db, config.telegram.bot_token, config.webapp.port)
+        webapp_runner = await start_webapp(db, config.telegram.bot_token, config.webapp.port, config.display)
         if config.webapp.public_url:
             # 메뉴 버튼(채팅창 왼쪽 아래)은 1:1 대화 전용 web_app 타입이라 항상 public_url을
             # 직접 써야 한다 (t.me 딥링크가 아니라).
@@ -187,22 +200,16 @@ async def async_main(config_path: str) -> None:
                 "webapp.enabled=true but webapp.public_url is not set - menu button skipped"
             )
 
-    tasks = [asyncio.create_task(run_retention_loop(db, config.crawl.retention_days))]
-
-    if config.digest.enabled:
-        digest_chat_id = config.digest.chat_id or config.telegram.default_chat_id
-        tasks.append(
-            asyncio.create_task(
-                run_digest_loop(
-                    db, notifier, digest_chat_id,
-                    config.digest.hour, config.digest.minute, config.digest.top_n,
-                )
-            )
-        )
-        logger.info(
-            "digest scheduled daily at %02d:%02d KST (top %d)",
-            config.digest.hour, config.digest.minute, config.digest.top_n,
-        )
+    tasks = [
+        asyncio.create_task(run_retention_loop(db, config)),
+        # on/off와 시각은 매 사이클 config.digest에서 새로 읽으므로, /settings로 바꾼
+        # 값도 재시작 없이 반영된다 - 그래서 enabled 여부와 무관하게 항상 띄워둔다.
+        asyncio.create_task(run_digest_loop(db, notifier, config)),
+    ]
+    logger.info(
+        "digest loop started (enabled=%s, %02d:%02d KST, top %d)",
+        config.digest.enabled, config.digest.hour, config.digest.minute, config.digest.top_n,
+    )
 
     for crawler in crawlers:
         site_config = crawler.site_config
@@ -230,6 +237,7 @@ async def async_main(config_path: str) -> None:
             await webapp_runner.cleanup()
         await admin_bot.stop()
         await db.close()
+        await close_browser()
 
 
 def main() -> None:

@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS price_events (
     new_price TEXT,
     changed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 # 이미 존재하는 DB 파일에도 안전하게 컬럼을 추가하기 위한 마이그레이션 목록.
@@ -61,6 +65,7 @@ _MIGRATIONS: list[tuple[str, str]] = [
     ("articles.mall", "ALTER TABLE articles ADD COLUMN mall TEXT"),
     ("articles.delivery", "ALTER TABLE articles ADD COLUMN delivery TEXT"),
     ("articles.last_checked_at", "ALTER TABLE articles ADD COLUMN last_checked_at TEXT"),
+    ("site_state.fetch_method", "ALTER TABLE site_state ADD COLUMN fetch_method TEXT"),
 ]
 
 
@@ -385,6 +390,21 @@ class Database:
         rows = await cursor.fetchall()
         return {row["site"]: bool(row["enabled"]) for row in rows}
 
+    async def get_site_fetch_method(self, site: str) -> str | None:
+        cursor = await self.conn.execute(
+            "SELECT fetch_method FROM site_state WHERE site = ?", (site,)
+        )
+        row = await cursor.fetchone()
+        return row["fetch_method"] if row else None
+
+    async def set_site_fetch_method(self, site: str, method: str) -> None:
+        await self.conn.execute(
+            "INSERT INTO site_state (site, enabled, fetch_method) VALUES (?, 1, ?) "
+            "ON CONFLICT(site) DO UPDATE SET fetch_method = excluded.fetch_method",
+            (site, method),
+        )
+        await self.conn.commit()
+
     async def get_site_bootstrapped(self, site: str) -> bool:
         cursor = await self.conn.execute(
             "SELECT bootstrapped FROM site_state WHERE site = ?", (site,)
@@ -499,3 +519,18 @@ class Database:
         )
         rows = await cursor.fetchall()
         return {row["mall"]: row["n"] for row in rows}
+
+    # ---- 관리자 텔레그램에서 편집 가능한 설정값 (config.yaml 재배포 없이 즉시 반영) ----
+
+    async def get_all_settings(self) -> dict[str, str]:
+        cursor = await self.conn.execute("SELECT key, value FROM settings")
+        rows = await cursor.fetchall()
+        return {row["key"]: row["value"] for row in rows}
+
+    async def set_setting(self, key: str, value: str) -> None:
+        await self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        await self.conn.commit()

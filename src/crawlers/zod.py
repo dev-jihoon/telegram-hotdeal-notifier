@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 
 from ..models import Article, ArticleStatus
 from .base import BaseCrawler
+from .browser import browser_get
 from .cf_bypass import cf_get
 from .registry import register_crawler
 
@@ -15,22 +16,31 @@ ARTICLE_ID_RE = re.compile(r"/deal/(\d+)")
 END_KEYWORDS = ("품절", "종료", "매진", "마감")
 
 
+async def _get(fetch_method: str, url: str) -> tuple[int, str]:
+    # zod는 curl_cffi(TLS 흉내)로는 못 뚫는 Cloudflare JS 챌린지가 자주 걸려서 기본값은
+    # playwright(실제 헤드리스 브라우저)다. 나중에 차단이 풀리면 관리자가 /sites에서
+    # 더 가볍고 빠른 requests(curl_cffi)로 다시 바꿔볼 수 있게 남겨둔다.
+    if fetch_method == "playwright":
+        return await browser_get(url)
+    return await cf_get(url)
+
+
 @register_crawler("zod")
 class ZodCrawler(BaseCrawler):
     async def fetch(self) -> list[Article]:
         articles: list[Article] = []
         for page in range(1, self.crawl_config.listing_pages + 1):
-            status, html = await cf_get(LIST_URL.format(page=page))
+            status, html = await _get(self.site_config.fetch_method, LIST_URL.format(page=page))
             if status != 200:
                 continue
             articles.extend(_parse_listing(html))
         return articles
 
     async def check_exists(self, article_url: str) -> bool:
-        # Cloudflare 우회가 일시적으로 실패하는 경우(403 등)를 삭제로 오판하지 않도록
-        # 404만 확정 삭제로 본다.
+        # 챌린지 페이지 자체는 절대 404를 주지 않으므로, 챌린지 통과 실패(403)를 삭제로
+        # 오판하지 않도록 404만 확정 삭제로 본다.
         try:
-            status, _ = await cf_get(article_url)
+            status, _ = await _get(self.site_config.fetch_method, article_url)
         except Exception:
             return True
         return status != 404

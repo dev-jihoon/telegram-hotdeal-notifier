@@ -90,14 +90,26 @@ sites:
   (예: `✅ 뽐뿌 (41)`). 누르면 즉시 토글되고 재시작해도 유지됩니다(SQLite에 저장).
   `config.yaml`의 `enabled` 값은 최초 1회 기본값으로만 쓰이고, 이후에는 이 토글이
   우선합니다. 새로 켠 사이트도 처음엔 조용히 기준선만 저장한 뒤 다음 사이클부터
-  알림이 갑니다.
+  알림이 갑니다. Cloudflare 우회가 필요한 사이트(아카라이브/퀘이사존/다모앙/zod)는
+  오른쪽에 `🌐 requests` / `🎭 playwright` 버튼이 추가로 붙어서 크롤링 방식을 바로
+  바꿀 수 있습니다 — curl_cffi 흉내(requests)가 서버 IP에 따라 막히면(예: `cf-mitigated:
+  challenge` 응답) playwright(실제 헤드리스 브라우저)로 바꿔보세요. 이것도 재시작 없이
+  바로 적용되고 DB에 저장됩니다.
 - `/status` — 사이트별 추적 글 수, 마지막 성공/실패 시각, 실패 사유를 한눈에 보여줍니다.
   🔄 새로고침 버튼으로 다시 조회할 수 있습니다.
+- `/settings` — 메시지/다이제스트/미니앱 문구와 크롤링 관련 세부 설정을 카테고리별로 보고
+  편집합니다. 켜짐/꺼짐 값은 버튼으로 바로 토글되고, 글자/숫자 값은 버튼을 누른 뒤 다음
+  메시지로 새 값을 보내면 반영됩니다. **재배포나 재시작 없이 바로 적용**되고 SQLite에 저장돼
+  이후 재시작에도 유지됩니다 — `config.yaml`의 해당 값은 한 번도 편집 전이었을 때만 쓰이는
+  기본값 역할만 합니다. 봇 토큰/chat_id/DB 경로/웹앱 포트·공개주소처럼 재배포 없이 바꾸면
+  오히려 인프라 설정과 어긋나는 값은 여기 포함하지 않고 `config.yaml`에만 둡니다.
 
 ## 일일 다이제스트
 
 `config.yaml`에서 `digest.enabled: true`로 켜면 매일 `digest.hour:digest.minute`(한국시간)에
-최근 24시간 동안 처음 올라온 글 중 추천수 상위 `digest.top_n`개를 정리해서 보냅니다.
+그날(한국시간 자정 기준, 롤링 24시간이 아님) 처음 올라온 글 중 추천수 상위 `digest.top_n`개를
+정리해서 보냅니다. 헤더 문구, 쇼핑몰 랭킹 라벨은 `display.*` 설정(또는 `/settings`)으로
+바꿀 수 있습니다.
 
 순위/제목/가격/추천수와 실제 링크, 인기 쇼핑몰 랭킹을 담은 텍스트 메시지 하나로 전송합니다.
 (앨범 미리보기도 고려했지만, 미디어그룹 항목에는 버튼을 못 붙여서 다른 알림 메시지들과 버튼
@@ -109,7 +121,9 @@ sites:
 ## 텔레그램 미니 웹앱
 
 `config.yaml`에서 `webapp.enabled: true`로 켜면 "오늘의 인기 핫딜"을 웹뷰로 볼 수 있는 미니
-웹앱이 함께 뜹니다 (같은 컨테이너 안에서 `webapp.port`로 리슨).
+웹앱이 함께 뜹니다 (같은 컨테이너 안에서 `webapp.port`로 리슨). 목록은 다이제스트와 동일하게
+그날(한국시간 자정 기준) 올라온 글만 보여줍니다. 페이지 제목, 사이트명 표시 여부, 빈 목록
+문구, 버튼 문구는 `display.*` 설정(또는 `/settings`)으로 바꿀 수 있습니다.
 
 **배포하려면 HTTPS 도메인이 필요합니다** (텔레그램 미니앱은 HTTP를 허용하지 않습니다). nginx
 리버스 프록시 예시:
@@ -160,9 +174,17 @@ server {
   정규식으로 가격을 추출하므로 100% 정확하지 않을 수 있습니다.
 - **카테고리**: 사이트가 카테고리/분류를 제공하는 경우에만 표시됩니다(다모앙, zod는 목록에서
   카테고리를 제공하지 않아 항상 생략됩니다).
-- **퀘이사존/다모앙/zod**: Cloudflare 봇 차단이 걸려 있어 브라우저 TLS/HTTP2 핑거프린트를
-  흉내내는 `curl_cffi`로 우회합니다. 서버 환경(특히 IP 평판)에 따라 다시 막힐 수 있습니다.
-  계속 막히면 `config.yaml`에서 `enabled: false`로 끄고 다른 사이트만 사용하세요.
+- **아카라이브/퀘이사존/다모앙/zod**: Cloudflare 봇 차단 대상이라 요청 방식을 사이트별로 고를
+  수 있습니다 (`sites.<key>.fetch_method`, 또는 관리자 `/sites`에서 재배포 없이 바로 전환).
+  - `"requests"`(기본값): 브라우저 TLS/HTTP2 핑거프린트를 흉내내는 `curl_cffi`(아카라이브는
+    일반 aiohttp)로 우회 - 빠르고 가볍지만, 서버 IP 평판에 따라 막힐 수 있습니다
+    (`cf-mitigated: challenge` 응답이나 403이 계속 오면 이 경우입니다).
+  - `"playwright"`: 실제로 JS를 실행하는 헤드리스 브라우저(Chromium)로 접근합니다
+    (`src/crawlers/browser.py`) - "requests"가 못 뚫는 JS 챌린지("Just a moment...")까지
+    통과하지만, 그만큼 이미지가 커지고(Chromium 바이너리 포함) 메모리도 더 씁니다. Docker
+    빌드 시 `playwright install --with-deps chromium`이 자동 실행됩니다.
+  - zod는 `curl_cffi` 흉내로는 거의 항상 막혀서 기본값이 `"playwright"`입니다. 둘 다 계속
+    막히면 `enabled: false`로 끄세요.
 - **에펨코리아**: 자체 "보안 시스템"이 있어 짧은 시간에 반복 요청하면 일시적으로 430 응답을
   돌려줄 수 있습니다. `interval_seconds`를 너무 짧게 잡지 마세요(기본값 60초 이상 권장).
   이 430 응답과 실제 "삭제됨"을 구분할 방법이 없어, 삭제 감지는 확실한 404일 때만 동작합니다
@@ -208,3 +230,10 @@ server {
 | `webapp.port` | 미니 웹앱 웹서버 포트 | 8080 |
 | `webapp.public_url` | 미니 웹앱의 실제 HTTPS 주소 (nginx 등으로 연결) | (없음) |
 | `webapp.short_name` | BotFather `/newapp`으로 등록한 Mini App 짧은 이름 (채널 메시지 버튼용) | (없음) |
+| `display.show_site_name` | 메시지에 `[뽐뿌]` 같은 사이트명 접두사 표시 여부 | true |
+| `display.webapp_button_label` / `webapp_title` / `webapp_empty_message` | 미니앱 관련 버튼/제목/빈 목록 문구 | 코드 참고 |
+| `display.digest_header` / `digest_mall_ranking_label` | 다이제스트 헤더/쇼핑몰 랭킹 라벨 문구 | 코드 참고 |
+
+`display.*`와 `crawl.*`, `digest.*` 항목은 관리자 `/settings` 명령으로도 재배포 없이 바로
+편집할 수 있습니다 (위 "관리자 기능" 참고). `config.yaml` 값은 한 번도 편집하지 않았을 때만
+쓰이는 기본값입니다.

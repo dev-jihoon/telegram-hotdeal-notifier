@@ -11,6 +11,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, RetryAfter, TelegramError, TimedOut
 
+from .config import DisplayConfig
 from .image_processing import fetch_letterboxed
 from .models import Article, ArticleStatus
 
@@ -53,14 +54,17 @@ class RateLimiter:
             self._last_sent[chat_id] = time.monotonic()
 
 
-def format_message(article: Article) -> str:
-    site_label = SITE_LABELS.get(article.site, article.site)
-    prefix = f"[{site_label}]"
+def format_message(article: Article, show_site_name: bool = True) -> str:
+    prefix = ""
+    if show_site_name:
+        site_label = SITE_LABELS.get(article.site, article.site)
+        prefix = f"[{site_label}]"
     if article.mall and article.mall != article.category:
         prefix += f"[{html.escape(article.mall, quote=False)}]"
     if article.category:
         prefix += f"[{html.escape(article.category, quote=False)}]"
-    lines = [f"<b>{prefix} {html.escape(article.title, quote=False)}</b>"]
+    title = html.escape(article.title, quote=False)
+    lines = [f"<b>{prefix} {title}</b>" if prefix else f"<b>{title}</b>"]
 
     # 가격/배송비를 "22,210원/무료" 형태로 한 줄에 표시 (추천수는 계속 표시하지 않음)
     price_parts = [p for p in (article.price, article.delivery) if p]
@@ -76,13 +80,15 @@ def format_message(article: Article) -> str:
     return text
 
 
-def build_markup(article: Article, webapp_link: str | None = None) -> InlineKeyboardMarkup:
+def build_markup(
+    article: Article, webapp_link: str | None = None, webapp_button_label: str = "🔥 인기 핫딜"
+) -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton("바로가기", url=article.url)]
     if webapp_link:
         # 채널/그룹 인라인 버튼은 텔레그램 정책상 web_app 타입을 못 쓰므로, BotFather에
         # 등록한 Mini App 짧은 이름으로 만든 t.me 딥링크(일반 url 버튼)를 사용한다.
         # 이 링크는 텔레그램 클라이언트가 특별 처리해서 진짜 미니앱으로 열어준다.
-        buttons.append(InlineKeyboardButton("🔥 인기 핫딜", url=webapp_link))
+        buttons.append(InlineKeyboardButton(webapp_button_label, url=webapp_link))
     return InlineKeyboardMarkup([buttons])
 
 
@@ -103,15 +109,19 @@ async def _with_flood_retry(func: Callable[[], Awaitable[T]], max_retries: int =
 
 
 class TelegramNotifier:
-    def __init__(self, bot: Bot, webapp_link: str | None = None):
+    def __init__(self, bot: Bot, display: DisplayConfig, webapp_link: str | None = None):
         self._bot = bot
         self._limiter = RateLimiter()
         self._webapp_link = webapp_link
+        # 값을 복사해두지 않고 설정 객체 자체를 들고 있는다 - 관리자가 텔레그램에서
+        # /settings로 값을 바꾸면(같은 객체를 그대로 수정) 재시작 없이 바로 다음 메시지부터
+        # 반영된다.
+        self._display = display
 
     async def send(self, article: Article, chat_id: int) -> tuple[int, bool]:
         """새 글을 전송하고 (message_id, has_photo)를 반환한다."""
-        text = format_message(article)
-        markup = build_markup(article, self._webapp_link)
+        text = format_message(article, self._display.show_site_name)
+        markup = build_markup(article, self._webapp_link, self._display.webapp_button_label)
 
         if article.thumbnail_url:
             # 세로/정사각형 썸네일이 많아 메시지 높이가 들쭉날쭉해지는 걸 막기 위해
@@ -151,8 +161,8 @@ class TelegramNotifier:
         return message.message_id, False
 
     async def edit(self, article: Article, chat_id: int, message_id: int, has_photo: bool) -> None:
-        text = format_message(article)
-        markup = build_markup(article, self._webapp_link)
+        text = format_message(article, self._display.show_site_name)
+        markup = build_markup(article, self._webapp_link, self._display.webapp_button_label)
         await self._limiter.wait(chat_id)
 
         try:
@@ -212,7 +222,9 @@ class TelegramNotifier:
         """
         markup = None
         if self._webapp_link:
-            markup = InlineKeyboardMarkup([[InlineKeyboardButton("📱 웹에서 더보기", url=self._webapp_link)]])
+            markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(self._display.webapp_button_label, url=self._webapp_link)]]
+            )
 
         await self._limiter.wait(chat_id)
         await _with_flood_retry(

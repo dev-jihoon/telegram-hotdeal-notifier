@@ -33,6 +33,16 @@ webapp:
   # 이걸 채워두면 채널/그룹 핫딜 메시지에도 "🔥 인기 핫딜" 버튼이 붙습니다 (t.me/bot/short_name
   # 딥링크 - 텔레그램이 이 형식만 채널에서도 진짜 미니앱으로 열어줍니다). 비워두면 이 버튼은 안 붙습니다.
 
+display:
+  # 아래 값들은 텔레그램 관리자 채팅의 /settings 명령으로도 재배포 없이 바로 편집할 수
+  # 있습니다. 여기 값은 관리자가 한 번도 편집하지 않았을 때만 적용되는 기본값입니다.
+  show_site_name: true               # 메시지에 [뽐뿌] 같은 사이트명 접두사를 표시할지
+  webapp_button_label: "🔥 인기 핫딜"  # 메시지/다이제스트에 붙는 미니앱 버튼 문구
+  webapp_title: "🔥 오늘의 인기 핫딜"   # 미니앱 페이지 제목
+  webapp_empty_message: "오늘 올라온 핫딜이 아직 없습니다."
+  digest_header: "🔥 오늘의 인기 핫딜 TOP"
+  digest_mall_ranking_label: "🏪 오늘의 인기 쇼핑몰"
+
 sites:
   ppomppu:
     enabled: true
@@ -46,6 +56,9 @@ sites:
   arcalive:
     enabled: true
     interval_seconds: 60
+    # fetch_method: "playwright"       # Cloudflare가 이 서버 IP만 챌린지로 막는 경우 이걸로
+    # 바꾸세요 (기본은 "requests" - curl_cffi/aiohttp로 더 가볍고 빠름). 관리자 /sites에서도
+    # 재배포 없이 바로 바꿀 수 있습니다.
   fmkorea:
     enabled: true
     interval_seconds: 60
@@ -58,13 +71,17 @@ sites:
   quasarzone:
     # Cloudflare 봇 차단이 걸려있어 curl_cffi(브라우저 위장)로 우회합니다.
     # 대부분의 환경에서 잘 동작하지만, 서버 IP 평판에 따라 막힐 수 있습니다.
-    # 계속 실패하면 enabled: false로 끄고 다른 사이트만 사용하세요.
+    # 계속 막히면 fetch_method: "playwright"로 바꿔보거나(위 아카라이브 설명 참고),
+    # enabled: false로 끄고 다른 사이트만 사용하세요.
     enabled: true
     interval_seconds: 90
   zod:
-    # 퀘이사존과 마찬가지로 Cloudflare 우회(curl_cffi)를 사용합니다.
+    # 퀘이사존보다 Cloudflare 차단이 더 강해서(curl_cffi 흉내로는 거의 항상 막힘) 기본값을
+    # playwright(실제 헤드리스 브라우저)로 둡니다. Dockerfile이 자동으로 Chromium을
+    # 설치합니다. 더 가벼운 "requests"로 시도해보고 싶으면 fetch_method를 바꾸세요.
     enabled: true
     interval_seconds: 90
+    fetch_method: "playwright"
 
   # 사이트 추가 예시 — src/crawlers/<site>.py 에 BaseCrawler 구현 +
   # @register_crawler("<site>") 등록 후, 여기에 동일한 키로 항목만 추가하면 됩니다.
