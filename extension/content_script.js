@@ -1,10 +1,23 @@
-// 아카라이브의 아무 게시판 목록(https://arca.live/b/<board>)이나 감시한다. 핫딜(/b/hotdeal)
-// 전용 필드(가격/배송/쇼핑몰/종료뱃지) 셀렉터는 src/crawlers/arcalive.py의 _parse_listing()과
-// 동일하게 유지하되, 다른 게시판엔 해당 요소가 아예 없으므로 항상 null로 자연스럽게 빠진다.
+// 아카라이브의 아무 게시판 목록(https://arca.live/b/<board>)이나 감시한다.
+//
+// 처음엔 웹소켓으로 목록이 실시간 갱신될 거라 가정하고 MutationObserver로 새 글만
+// 감지하는 방식으로 만들었는데, 실측해보니 목록 자체는 새로고침 없이 갱신되지 않았다.
+// 그래서 지금은 폴링 크롤러와 동일한 모델로 바꿨다: 탭은 그대로 열어두되, 주기적으로
+// 같은 URL을 fetch()로 다시 받아(이미 Cloudflare를 통과한 세션의 쿠키가 그대로 실려서
+// 나간다) 목록 전체를 다시 파싱해 서버로 보낸다. 신규/수정/삭제 판정은 서버가
+// (다른 사이트의 폴링 크롤러와 완전히 동일한 로직으로) 처리한다 - 그래서 이미지도 여기서
+// 미리 안 받아온다: 어차피 서버가 신규로 확정한 글만 실제로 이미지가 필요한데, 그건 이
+// 시점엔 알 수 없고, 서버의 기존 폴백(원본 썸네일 URL 직접 요청 → 실패 시 URL만 텔레그램에
+// 넘겨 텔레그램 서버가 대신 가져가게 함)이 이미 있어 대부분 그걸로 충분하다.
+//
+// 셀렉터는 src/crawlers/arcalive.py의 _parse_listing()과 최대한 동일하게 유지한다 -
+// 서버 파서와 결과가 어긋나면 같은 글이 다르게 보여서 계속 "변경됨"으로 오인될 수 있다.
+// 핫딜(/b/hotdeal) 전용 필드(가격/배송/쇼핑몰/종료뱃지) 셀렉터는 다른 게시판엔 해당
+// 요소가 아예 없으므로 항상 null로 자연스럽게 빠진다.
 
 (function () {
-  // 게시글 상세 페이지(/b/<board>/<id>)에서는 동작하지 않는다 - 목록 페이지(/b/<board>,
-  // 페이지네이션 쿼리 포함)에서만 실행한다.
+  // 게시글 상세 페이지(/b/<board>/<id>)에서는 동작하지 않는다 - 목록 페이지(/b/<board>)
+  // 에서만 실행한다.
   const boardMatch = location.pathname.match(/^\/b\/([\w\d]+)\/?$/);
   if (!boardMatch) return;
 
@@ -14,31 +27,10 @@
   const SITE_ALIASES = { hotdeal: "arcalive" };
   const BOARD_SLUG = boardMatch[1];
   const SITE = SITE_ALIASES[BOARD_SLUG] || BOARD_SLUG;
+  const LIST_URL = `https://arca.live/b/${BOARD_SLUG}`;
   const LOG_PREFIX = "[arcalive-bridge]";
+  const POLL_INTERVAL_MS = 60 * 1000; // 1분 - 폴링 크롤러들의 기본 interval_seconds와 맞춤
   const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5분
-  const seen = new Set();
-
-  function waitForElement(selector, timeoutMs = 15000) {
-    return new Promise((resolve) => {
-      const existing = document.querySelector(selector);
-      if (existing) {
-        resolve(existing);
-        return;
-      }
-      const observer = new MutationObserver(() => {
-        const el = document.querySelector(selector);
-        if (el) {
-          observer.disconnect();
-          resolve(el);
-        }
-      });
-      observer.observe(document.body, { childList: true, subtree: true });
-      setTimeout(() => {
-        observer.disconnect();
-        resolve(document.querySelector(selector));
-      }, timeoutMs);
-    });
-  }
 
   function parseRow(row) {
     // 썸네일 있는 "카드형" 게시판(아카라이브에서 hybrid 클래스가 붙음, 핫딜 게시판 등)은
@@ -111,82 +103,50 @@
     };
   }
 
-  async function fetchImageBase64(url) {
-    if (!url) return null;
-    try {
-      const res = await fetch(url);
-      if (!res.ok) return null;
-      const blob = await res.blob();
-      return await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result); // "data:image/...;base64,...."
-        reader.onerror = () => resolve(null);
-        reader.readAsDataURL(blob);
-      });
-    } catch (e) {
-      return null;
-    }
-  }
-
-  // isInitialBatch가 true면(페이지 최초 스캔) 이미지를 안 받아온다 - 서버가 이 배치를
-  // 조용히 기준선으로만 저장하고 전송하지 않으므로 이미지가 필요 없고, 수십 개를 한꺼번에
-  // 받아오면 느려지기만 한다.
-  async function handleRow(row, isInitialBatch) {
-    const article = parseRow(row);
-    if (!article || seen.has(article.article_id)) return null;
-    seen.add(article.article_id);
-    if (!isInitialBatch) {
-      article.image_base64 = await fetchImageBase64(article.thumbnail_url);
-    }
-    return article;
-  }
-
-  async function scanInitialBatch(table) {
-    const rows = table.querySelectorAll(".vrow");
+  function parseListing(doc) {
+    const table = doc.querySelector(".list-table");
+    if (!table) return null;
     const articles = [];
-    for (const row of rows) {
-      const article = await handleRow(row, true);
+    for (const row of table.querySelectorAll(".vrow")) {
+      const article = parseRow(row);
       if (article) articles.push(article);
     }
-    if (articles.length > 0) {
-      browser.runtime.sendMessage({ type: "batch", site: SITE, articles });
-      console.log(`${LOG_PREFIX} [${SITE}] initial batch sent: ${articles.length} articles`);
-    }
+    return articles;
   }
 
-  function observeNewRows(table) {
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (!(node instanceof HTMLElement)) continue;
-          const rows = node.matches?.(".vrow")
-            ? [node]
-            : Array.from(node.querySelectorAll?.(".vrow") || []);
-          for (const row of rows) {
-            handleRow(row, false).then((article) => {
-              if (!article) return;
-              browser.runtime.sendMessage({ type: "article", site: SITE, article });
-              console.log(`${LOG_PREFIX} [${SITE}] new article sent: ${article.article_id} ${article.title}`);
-            });
-          }
-        }
-      }
-    });
-    observer.observe(table, { childList: true, subtree: true });
+  async function fetchListingDoc() {
+    const res = await fetch(LIST_URL, { credentials: "include", cache: "no-store" });
+    const html = await res.text();
+    return new DOMParser().parseFromString(html, "text/html");
   }
 
-  async function main() {
-    const table = await waitForElement(".list-table");
-    if (!table) {
-      console.error(`${LOG_PREFIX} [${SITE}] .list-table not found - page layout may have changed`);
+  async function pollOnce(doc) {
+    let articles;
+    try {
+      articles = parseListing(doc || (await fetchListingDoc()));
+    } catch (e) {
+      console.error(`${LOG_PREFIX} [${SITE}] fetch/parse failed:`, e);
       return;
     }
-    await scanInitialBatch(table);
-    observeNewRows(table);
+    // 목록이 비어있거나 .list-table 자체가 없으면 대부분 Cloudflare 챌린지 페이지를
+    // 받은 것이다(cf_clearance 쿠키 만료 등) - 진짜 빈 목록으로 보내면 서버가 기존
+    // 추적 글을 전부 "계속 안 보임"으로 오판할 수 있으므로 이번 사이클은 그냥 건너뛴다.
+    if (!articles || articles.length === 0) {
+      console.warn(`${LOG_PREFIX} [${SITE}] listing empty/unparseable - Cloudflare challenge? skipping this cycle`);
+      return;
+    }
+    browser.runtime.sendMessage({ type: "batch", site: SITE, articles });
+    console.log(`${LOG_PREFIX} [${SITE}] sent listing: ${articles.length} articles`);
+  }
+
+  function main() {
+    // 첫 사이클은 이미 로드되어 있는 라이브 문서를 그대로 쓴다 (불필요한 재요청 방지).
+    pollOnce(document);
+    setInterval(() => pollOnce(), POLL_INTERVAL_MS);
     setInterval(() => {
       browser.runtime.sendMessage({ type: "heartbeat", site: SITE });
     }, HEARTBEAT_INTERVAL_MS);
-    console.log(`${LOG_PREFIX} watching arca.live board '${SITE}'`);
+    console.log(`${LOG_PREFIX} watching arca.live board '${SITE}' (polling every ${POLL_INTERVAL_MS / 1000}s)`);
   }
 
   main();

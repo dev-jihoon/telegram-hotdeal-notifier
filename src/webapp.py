@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import logging
@@ -15,7 +14,7 @@ from .config import Config, DisplayConfig
 from .db import Database
 from .models import Article, ArticleStatus
 from .price import parse_won
-from .sync import ingest_webhook_article, ingest_webhook_batch
+from .sync import sync_webhook_listing
 from .telegram_notifier import SITE_LABELS, TelegramNotifier
 from .time_utils import start_of_today_kst_iso
 
@@ -100,24 +99,10 @@ def _article_from_payload(site: str, data: dict) -> Article:
     )
 
 
-def _decode_image(data: dict) -> bytes | None:
-    b64 = data.get("image_base64")
-    if not b64:
-        return None
-    try:
-        # 확장 프로그램이 data URL("data:image/jpeg;base64,...")로 보낼 수도 있어 접두사를 벗긴다.
-        if "," in b64 and b64.strip().startswith("data:"):
-            b64 = b64.split(",", 1)[1]
-        return base64.b64decode(b64)
-    except Exception:
-        logger.warning("failed to decode image_base64 for webhook article %s", data.get("article_id"))
-        return None
-
-
 def create_app(
     db: Database, bot_token: str, display: DisplayConfig, config: Config, notifier: TelegramNotifier
 ) -> web.Application:
-    app = web.Application(client_max_size=16 * 1024 * 1024)  # 이미지가 base64로 들어와서 넉넉히 잡음
+    app = web.Application(client_max_size=4 * 1024 * 1024)
 
     async def index(request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
@@ -156,30 +141,10 @@ def create_app(
         # site_state.last_success_at을 갱신한다(하트비트/글 수신 둘 다 "살아있다"는 신호).
         await db.record_crawl_success(site, datetime.now(timezone.utc).isoformat())
 
-    async def webhook_article(request: web.Request) -> web.Response:
-        auth_error = _check_webhook_auth(request)
-        if auth_error:
-            return auth_error
-        site = request.match_info["site"]
-        if not await db.get_site_enabled(site):
-            return web.json_response({"status": "site disabled, ignored"})
-        try:
-            data = await request.json()
-            article = _article_from_payload(site, data)
-        except Exception:
-            return web.json_response({"error": "invalid payload"}, status=400)
-
-        image_bytes = _decode_image(data)
-        chat_id = config.sites[site].chat_id if site in config.sites and config.sites[site].chat_id else config.telegram.default_chat_id
-        try:
-            await ingest_webhook_article(db, notifier, site, chat_id, config.crawl, article, raw_image_bytes=image_bytes)
-        except Exception:
-            logger.exception("[%s] failed to ingest webhook article %s", site, article.article_id)
-            return web.json_response({"error": "ingest failed"}, status=500)
-        await _touch_site_alive(site)
-        return web.json_response({"status": "ok"})
-
     async def webhook_batch(request: web.Request) -> web.Response:
+        """확장이 주기적으로(예: 1분마다) 다시 스크랩한 목록 전체를 받아 폴링 크롤러와
+        동일한 신규/수정/삭제 판정을 거친다 - 최초 1회만 조용히 기준선을 잡고, 그 뒤로는
+        매번 이 판정을 다시 거친다 (한 번 부트스트랩됐다고 끝나는 게 아니다)."""
         auth_error = _check_webhook_auth(request)
         if auth_error:
             return auth_error
@@ -192,13 +157,14 @@ def create_app(
         except Exception:
             return web.json_response({"error": "invalid payload"}, status=400)
 
+        chat_id = config.sites[site].chat_id if site in config.sites and config.sites[site].chat_id else config.telegram.default_chat_id
         try:
-            bootstrapped_now = await ingest_webhook_batch(db, site, articles)
+            await sync_webhook_listing(db, notifier, site, chat_id, config.crawl, articles)
         except Exception:
-            logger.exception("[%s] failed to ingest webhook batch", site)
-            return web.json_response({"error": "ingest failed"}, status=500)
+            logger.exception("[%s] failed to sync webhook listing", site)
+            return web.json_response({"error": "sync failed"}, status=500)
         await _touch_site_alive(site)
-        return web.json_response({"status": "ok", "bootstrapped": bootstrapped_now})
+        return web.json_response({"status": "ok"})
 
     async def webhook_heartbeat(request: web.Request) -> web.Response:
         auth_error = _check_webhook_auth(request)
@@ -210,7 +176,6 @@ def create_app(
 
     app.router.add_get("/", index)
     app.router.add_get("/api/deals", api_deals)
-    app.router.add_post("/webhook/{site}/article", webhook_article)
     app.router.add_post("/webhook/{site}/batch", webhook_batch)
     app.router.add_post("/webhook/{site}/heartbeat", webhook_heartbeat)
     app.router.add_static("/static/", STATIC_DIR)

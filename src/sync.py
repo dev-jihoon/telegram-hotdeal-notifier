@@ -139,7 +139,6 @@ async def _process_article(
     now: str,
     known_max_id: int | None,
     silent_catchup: bool,
-    raw_image_bytes: bytes | None = None,
 ) -> None:
     if existing is None:
         # 게시글 번호는 사이트가 순차 발급하므로, 지금까지 관측한 최고 번호보다 작은
@@ -161,7 +160,7 @@ async def _process_article(
                     site, article.article_id, known_max_id,
                 )
             return
-        message_id, has_photo = await notifier.send(article, chat_id, raw_image_bytes=raw_image_bytes)
+        message_id, has_photo = await notifier.send(article, chat_id)
         await db.insert_article(article, chat_id, message_id, has_photo, now)
         logger.info("[%s] new article %s", site, article.article_id)
         return
@@ -244,61 +243,91 @@ async def _process_article(
         await db.touch_last_seen(site, article.article_id, now)
 
 
-async def ingest_webhook_article(
+async def sync_webhook_listing(
     db: Database,
     notifier: TelegramNotifier,
     site: str,
     chat_id: int,
     crawl_config: CrawlConfig,
-    article: Article,
-    raw_image_bytes: bytes | None = None,
+    articles: list[Article],
 ) -> None:
-    """브라우저 확장 등 웹훅으로 들어온 글 하나를 처리한다.
+    """브라우저 확장이 주기적으로 다시 스크랩해 보내주는 목록 전체를 sync_site와 동일한
+    방식으로 처리한다.
 
-    폴링 크롤러의 sync_site와 달리 목록 전체가 아니라 매번 글 하나씩 들어오므로, 그때그때
-    해당 글의 추적 상태만 조회해서 _process_article에 그대로 흘려보낸다. known_max_id
-    체크는 필요 없다(목록을 훑어서 뒤늦게 발견되는 게 아니라 확장이 실시간으로 감지한
-    글이라 "오래된 글 재노출" 문제 자체가 없다).
+    아카라이브는 실시간으로 DOM이 갱신되는 게 아니라(웹소켓을 쓰긴 하지만 목록 자동 갱신엔
+    안 쓰인다는 게 실측으로 확인됨), 확장이 주기적으로 목록을 다시 가져와 파싱한 뒤 보내주는
+    구조로 바뀌었다 - 그래서 폴링 크롤러의 crawler.fetch()가 반환하는 것과 동일한 모양의
+    전체 목록을 받아 그대로 sync_site의 로직을 재사용한다. 유일한 차이는 삭제 감지: 서버가
+    아카라이브에 직접 요청을 보낼 수 없어 crawler.check_exists()로 개별 재확인을 할 수
+    없으므로, 대신 "목록에 계속 안 보인 지 쿨다운 기간이 지났다"를 삭제 신호로 쓴다.
     """
-    if not await db.get_site_bootstrapped(site):
-        logger.warning(
-            "[%s] webhook article %s ignored - site not bootstrapped yet (send an initial batch first)",
-            site, article.article_id,
-        )
-        return
     now = _now_iso()
-    tracked = await db.get_active_articles(site)
-    existing = tracked.get(article.article_id)
-    await _process_article(
-        db, notifier, site, chat_id, crawl_config, article, existing, now,
-        known_max_id=None, silent_catchup=False, raw_image_bytes=raw_image_bytes,
-    )
 
-
-async def ingest_webhook_batch(db: Database, site: str, articles: list[Article]) -> bool:
-    """확장 프로그램이 페이지를 처음 열었을 때 보내는 전체 목록으로 기준선을 잡는다.
-
-    폴링 크롤러의 최초 부트스트랩과 같은 취지 - 조용히 저장만 하고 알리지 않는다(안 그러면
-    이미 존재하던 글 수십 개가 한꺼번에 "신규"로 전송돼 도배가 된다). 이미 부트스트랩된
-    사이트에서 다시 호출되면 그냥 무시한다(그 다음부터는 단건 웹훅이 이어받는다).
-    성공적으로 기준선을 잡았으면 True를 반환한다.
-    """
-    if await db.get_site_bootstrapped(site):
-        return False
-    if len(articles) < 3:
-        logger.warning(
-            "[%s] webhook bootstrap batch returned only %d articles, not confirming baseline yet",
+    if not await db.get_site_bootstrapped(site):
+        # 이 사이트를 처음 받는 경우: sync_site의 최초 부트스트랩과 동일하게 조용히
+        # 기준선만 잡는다 - 안 그러면 기존 글 수십 개가 한꺼번에 "신규"로 전송된다.
+        if len(articles) < 3:
+            logger.warning(
+                "[%s] webhook bootstrap listing returned only %d articles, retrying next cycle instead of confirming baseline",
+                site, len(articles),
+            )
+            return
+        await db.insert_baseline_articles(articles, now)
+        await db.set_site_bootstrapped(site)
+        logger.info(
+            "[%s] bootstrapped via webhook with %d existing articles (no telegram messages sent)",
             site, len(articles),
         )
-        return False
-    now = _now_iso()
-    await db.insert_baseline_articles(articles, now)
-    await db.set_site_bootstrapped(site)
-    logger.info(
-        "[%s] bootstrapped via webhook with %d existing articles (no telegram messages sent)",
-        site, len(articles),
-    )
-    return True
+        return
+
+    tracked = await db.get_active_articles(site)
+    known_max_id = await db.get_max_numeric_article_id(site)
+
+    silent_catchup = False
+    last_success_at = await db.get_site_last_success_at(site)
+    if last_success_at is not None:
+        gap = datetime.now(timezone.utc) - datetime.fromisoformat(last_success_at)
+        threshold = timedelta(minutes=crawl_config.resume_silent_threshold_minutes)
+        if gap >= threshold:
+            silent_catchup = True
+            logger.warning(
+                "[%s] webhook resumed after a %.0f minute gap - treating this cycle as a silent "
+                "re-baseline instead of catching up with a burst of notifications",
+                site, gap.total_seconds() / 60,
+            )
+
+    seen_ids: set[str] = set()
+    for article in articles:
+        seen_ids.add(article.article_id)
+        existing = tracked.get(article.article_id)
+        try:
+            await _process_article(
+                db, notifier, site, chat_id, crawl_config, article, existing, now,
+                known_max_id, silent_catchup,
+            )
+        except Exception:
+            logger.exception(
+                "[%s] failed to process webhook article %s, skipping for this cycle", site, article.article_id
+            )
+
+    # 삭제 감지: crawler.check_exists()로 개별 페이지를 재요청할 수 없으므로, 목록에서
+    # 계속 빠져있는 채로 쿨다운 기간이 지나면 삭제로 간주한다 (한 사이클만 안 보인다고
+    # 바로 지우면, 글리젠이 활발한 게시판에서 순간적으로 페이지 밖으로 밀려난 살아있는
+    # 글을 오판할 수 있어 최소 쿨다운만큼은 계속 안 보여야 확정한다).
+    cooldown = timedelta(minutes=crawl_config.deletion_check_cooldown_minutes)
+    for article_id, existing in tracked.items():
+        if article_id in seen_ids or not existing.last_seen_at:
+            continue
+        gap = datetime.now(timezone.utc) - datetime.fromisoformat(existing.last_seen_at)
+        if gap < cooldown:
+            continue
+        if existing.message_id is not None:
+            await notifier.delete(existing.chat_id, existing.message_id)
+        await db.mark_deleted(site, article_id, now)
+        logger.info(
+            "[%s] deleted article %s (missing from webhook listing for %.0f min)",
+            site, article_id, gap.total_seconds() / 60,
+        )
 
 
 async def purge_expired(db: Database, retention_days: int) -> None:

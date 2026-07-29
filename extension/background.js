@@ -30,9 +30,6 @@ browser.runtime.onMessage.addListener((msg) => {
   if (msg.type === "batch") {
     return postWebhook(msg.site, "batch", { articles: msg.articles });
   }
-  if (msg.type === "article") {
-    return postWebhook(msg.site, "article", msg.article);
-  }
   if (msg.type === "heartbeat") {
     return postWebhook(msg.site, "heartbeat", {});
   }
