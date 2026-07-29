@@ -34,8 +34,12 @@ async def get_browser() -> Browser:
     async with _init_lock:
         if _browser is None:
             _playwright = await async_playwright().start()
-            _browser = await _playwright.firefox.launch(headless=True)
-            logger.info("playwright firefox browser launched")
+            # headless=False: 실제 서버에서 로그로 확인해보니 headless Firefox도 여전히
+            # 차단됐다 (관리자가 webtop에서 "진짜 창을 띄운" Firefox로 열었을 때만 성공함).
+            # 컨테이너엔 화면이 없으니 Dockerfile의 xvfb-run(가상 디스플레이)으로 감싸서
+            # 돌린다 - headless 특유의 신호 없이 진짜 창모드 브라우저처럼 보이게 하기 위함.
+            _browser = await _playwright.firefox.launch(headless=False)
+            logger.info("playwright firefox browser launched (headed, via xvfb)")
     return _browser
 
 
@@ -77,6 +81,10 @@ async def browser_get(url: str, timeout: int = 20) -> tuple[int, str]:
     # (Cloudflare가 자체적으로 403을 주는 경우도, 200으로 챌린지 페이지만 계속 보여주는
     # 경우도 있다). 그 외(진짜 404 포함)에는 실제 내비게이션 응답 상태코드를 그대로 쓴다.
     if any(marker in html for marker in _BLOCK_MARKERS):
+        logger.warning(
+            "playwright still blocked for %s (nav status=%s, title=%r, len=%d)",
+            url, status, title, len(html),
+        )
         return 403, html
     return status, html
 
