@@ -11,6 +11,7 @@ from .registry import register_crawler
 BASE_URL = "https://bbs.ruliweb.com"
 LIST_URL = BASE_URL + "/market/board/1020?page={page}"
 END_KEYWORDS = ("품절", "종료", "매진", "마감")
+NOT_FOUND_MARKER = "게시글이 없습니다"
 
 
 @register_crawler("ruliweb")
@@ -26,8 +27,11 @@ class RuliwebCrawler(BaseCrawler):
         return articles
 
     async def check_exists(self, article_url: str) -> bool:
-        # 삭제/존재하지 않는 글은 200으로 게시판 목록 페이지를 그대로 보여주므로
-        # 실제 글 본문 컨테이너(#board_read) 존재 여부로 판단한다.
+        # 삭제/존재하지 않는 글은 200으로 "게시글이 없습니다" 안내 페이지를 보여준다.
+        # 예전엔 실제 글 본문 컨테이너(#board_read)가 있는지로 판단했는데, 이건
+        # "있어야 존재"라는 positive-signal 방식이라 네트워크 문제로 페이지가 일부만
+        # 받아지는 등 어떤 이유로든 셀렉터가 안 걸리면 살아있는 글도 삭제로 오판하게
+        # 된다. 확실한 마커 문구가 있을 때만 삭제로 보는 negative-signal 방식이 더 안전하다.
         try:
             async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
                 async with session.get(
@@ -41,8 +45,7 @@ class RuliwebCrawler(BaseCrawler):
                     html = await resp.text(errors="replace")
         except Exception:
             return True
-        soup = BeautifulSoup(html, "lxml")
-        return soup.select_one("#board_read") is not None
+        return NOT_FOUND_MARKER not in html
 
 
 def _parse_listing(html: str) -> list[Article]:

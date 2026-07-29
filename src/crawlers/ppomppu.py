@@ -27,18 +27,29 @@ class PpomppuCrawler(BaseCrawler):
         return articles
 
     async def check_exists(self, article_url: str) -> bool:
+        # 상태코드를 먼저 확인하지 않고 본문 마커 텍스트만 봤더니, 서버 IP가 뽐뿌한테
+        # 일시적으로 차단/제한당했을 때 나오는 안내 페이지가 우연히 마커 문구를 포함하는
+        # 경우 살아있는 글을 삭제로 오판하는 사고가 있었다. 200 응답일 때만 마커를 신뢰한다.
         try:
             async with aiohttp.ClientSession(headers=DEFAULT_HEADERS) as session:
-                html = await _get_text(session, article_url)
+                status, html = await _get_status_and_text(session, article_url)
         except Exception:
+            return True
+        if status != 200:
             return True
         return NOT_FOUND_MARKER not in html
 
 
 async def _get_text(session: aiohttp.ClientSession, url: str) -> str:
+    _status, text = await _get_status_and_text(session, url)
+    return text
+
+
+async def _get_status_and_text(session: aiohttp.ClientSession, url: str) -> tuple[int, str]:
     async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
         raw = await resp.read()
-    return raw.decode("cp949", errors="replace")
+        status = resp.status
+    return status, raw.decode("cp949", errors="replace")
 
 
 def _parse_listing(html: str) -> list[Article]:
@@ -59,7 +70,7 @@ def _parse_listing(html: str) -> list[Article]:
         url = urljoin(BASE_URL, title_a["href"])
 
         classes = title_a.get("class", [])
-        status = ArticleStatus.ENDED if any("end" in c for c in classes) else ArticleStatus.ACTIVE
+        status = ArticleStatus.ENDED if any(c.startswith("end") for c in classes) else ArticleStatus.ACTIVE
 
         thumbnail_url = None
         thumb_a = row.select_one("a.baseList-thumb")

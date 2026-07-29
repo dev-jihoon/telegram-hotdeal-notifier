@@ -7,12 +7,14 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from telegram import Bot, MenuButtonWebApp, WebAppInfo
+from telegram.request import HTTPXRequest
 
 from .admin_bot import AdminBot
 from .config import Config, load_config
 from .crawlers import load_all_crawlers
 from .db import Database
 from .digest import send_digest
+from .singleton_lock import acquire_singleton_lock
 from .sync import purge_expired, sync_site
 from .telegram_notifier import SITE_LABELS, TelegramNotifier
 from .webapp import start_webapp
@@ -121,12 +123,20 @@ async def run_digest_loop(
 
 async def async_main(config_path: str) -> None:
     config = load_config(config_path)
+    acquire_singleton_lock(config.database.path)
 
     db = Database(config.database.path)
     await db.connect()
     await db.seed_site_state({key: site.enabled for key, site in config.sites.items()})
 
-    bot = Bot(token=config.telegram.bot_token)
+    # 사이트 크롤 루프 9개가 봇 인스턴스 하나를 동시에 공유하는데, python-telegram-bot의
+    # 기본 연결 풀 크기는 1이라 여러 사이트가 동시에 전송을 시도하면 나머지가 1초 만에
+    # PoolTimeout으로 실패한다 (실패한 전송은 DB에 기록이 안 남아 다음 사이클에 "새 글"로
+    # 재시도되며 도배처럼 보이는 원인이 됐다) - 동시 사용량에 맞게 풀을 넉넉히 키운다.
+    bot = Bot(
+        token=config.telegram.bot_token,
+        request=HTTPXRequest(connection_pool_size=16, pool_timeout=30.0),
+    )
 
     # 채널/그룹 메시지에 붙일 미니앱 버튼 링크를 미리 계산해둔다.
     # BotFather에 Mini App 짧은 이름(short_name)을 등록했으면 t.me 딥링크를 쓰고

@@ -162,6 +162,21 @@ class Database:
         assert self._conn is not None, "Database not connected"
         return self._conn
 
+    async def get_max_numeric_article_id(self, site: str) -> int | None:
+        """이 사이트에서 지금까지 한 번이라도 관측한 article_id 중 가장 큰 숫자값.
+
+        게시글 번호는 사이트가 순차 발급하므로, 이 값보다 작은 번호는 오늘 새로
+        쓰인 글일 수 없다 - 인기글 재노출 등으로 뒤늦게 크롤 범위(1~2페이지)에
+        걸린 오래된 글을 "신규"로 오인해 전송하는 걸 막는 데 쓴다. deleted_at
+        여부와 무관하게 전체를 본다 (한 번 봤던 번호는 삭제됐어도 여전히 유효한 상한선).
+        """
+        cursor = await self.conn.execute(
+            "SELECT article_id FROM articles WHERE site = ?", (site,)
+        )
+        rows = await cursor.fetchall()
+        ids = [int(row["article_id"]) for row in rows if row["article_id"].isdigit()]
+        return max(ids) if ids else None
+
     async def get_active_articles(self, site: str) -> dict[str, TrackedArticle]:
         cursor = await self.conn.execute(
             "SELECT * FROM articles WHERE site = ? AND deleted_at IS NULL",
@@ -230,8 +245,8 @@ class Database:
     async def insert_baseline_articles(self, articles: list[Article], now: str) -> None:
         """사이트를 처음 크롤링할 때, 텔레그램 전송 없이 현재 목록을 기준선으로 저장한다.
 
-        chat_id/message_id는 NULL로 남기고, 이후 해당 글의 내용이 실제로 바뀌면
-        그때 처음으로 전송한다 (promote_baseline 참고).
+        chat_id/message_id는 NULL로 남기고, 이후 내용이 바뀌어도 전송하지 않는다
+        (기준선 시점에 이미 존재하던 글이라 "신규"가 아니므로) - DB만 조용히 갱신한다.
         """
         await self.conn.executemany(
             """
@@ -260,53 +275,6 @@ class Database:
                 )
                 for a in articles
             ],
-        )
-        await self.conn.commit()
-
-    async def promote_baseline(
-        self,
-        site: str,
-        article_id: str,
-        *,
-        chat_id: int,
-        message_id: int,
-        has_photo: bool,
-        title: str,
-        price: str | None,
-        likes: int | None,
-        status: ArticleStatus,
-        thumbnail_url: str | None,
-        category: str | None,
-        mall: str | None,
-        delivery: str | None,
-        now: str,
-    ) -> None:
-        """기준선으로만 저장돼 있던(텔레그램 미전송) 글이 바뀌어 처음 전송될 때 사용."""
-        await self.conn.execute(
-            """
-            UPDATE articles
-            SET chat_id = ?, message_id = ?, has_photo = ?, title = ?, price = ?, likes = ?,
-                status = ?, thumbnail_url = ?, category = ?, mall = ?, delivery = ?,
-                last_seen_at = ?, last_edited_at = ?
-            WHERE site = ? AND article_id = ?
-            """,
-            (
-                chat_id,
-                message_id,
-                int(has_photo),
-                title,
-                price,
-                likes,
-                status.value,
-                thumbnail_url,
-                category,
-                mall,
-                delivery,
-                now,
-                now,
-                site,
-                article_id,
-            ),
         )
         await self.conn.commit()
 

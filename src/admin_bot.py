@@ -38,7 +38,13 @@ class AdminBot:
         self._admin_chat_id = admin_chat_id
         self._db = db
         self._site_keys = site_keys
-        self._app = Application.builder().token(bot_token).build()
+        self._app = (
+            Application.builder()
+            .token(bot_token)
+            .connection_pool_size(8)
+            .pool_timeout(30.0)
+            .build()
+        )
         self._app.add_handler(CommandHandler("start", self._cmd_start))
         self._app.add_handler(CommandHandler("sites", self._cmd_sites))
         self._app.add_handler(CommandHandler("status", self._cmd_status))

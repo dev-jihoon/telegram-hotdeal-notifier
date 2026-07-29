@@ -16,13 +16,8 @@ def _build_summary_text(articles: list, mall_counts: dict[str, int]) -> str:
         site_label = SITE_LABELS.get(article.site, article.site)
         title = html.escape(article.title, quote=False)
         parts = [f"{i}. <a href=\"{article.url}\">[{site_label}] {title}</a>"]
-        meta = []
-        if article.price:
-            meta.append(f"💰 {html.escape(article.price, quote=False)}")
         if article.likes is not None:
-            meta.append(f"👍 {article.likes}")
-        if meta:
-            parts.append(" | ".join(meta))
+            parts.append(f"👍 {article.likes}")
         lines.append("\n".join(parts))
         lines.append("")
 

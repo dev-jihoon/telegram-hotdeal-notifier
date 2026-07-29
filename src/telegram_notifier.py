@@ -7,12 +7,12 @@ import time
 from collections import defaultdict
 from typing import Awaitable, Callable, TypeVar
 
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, RetryAfter, TelegramError
+from telegram.error import BadRequest, RetryAfter, TelegramError, TimedOut
 
+from .image_processing import fetch_letterboxed
 from .models import Article, ArticleStatus
-from .price import parse_won
 
 logger = logging.getLogger(__name__)
 
@@ -53,22 +53,8 @@ class RateLimiter:
             self._last_sent[chat_id] = time.monotonic()
 
 
-def _format_price_line(price: str, previous_price: str | None) -> str:
-    escaped_price = html.escape(price, quote=False)
-    if not previous_price or previous_price == price:
-        return escaped_price
-
-    old_won = parse_won(previous_price)
-    new_won = parse_won(price)
-    if old_won is None or new_won is None or new_won >= old_won or old_won == 0:
-        return escaped_price
-
-    discount_pct = round((old_won - new_won) / old_won * 100)
-    escaped_old = html.escape(previous_price, quote=False)
-    return f"<s>{escaped_old}</s> → {escaped_price} (-{discount_pct}%)"
-
-
-def format_message(article: Article, previous_price: str | None = None) -> str:
+def format_message(article: Article) -> str:
+    # 가격은 대부분 게시글 제목에 이미 포함돼 있어(제목 굵은 글씨로 표시) 중복 표시하지 않는다.
     site_label = SITE_LABELS.get(article.site, article.site)
     prefix = f"[{site_label}]"
     if article.mall and article.mall != article.category:
@@ -77,12 +63,8 @@ def format_message(article: Article, previous_price: str | None = None) -> str:
         prefix += f"[{html.escape(article.category, quote=False)}]"
     lines = [f"<b>{prefix} {html.escape(article.title, quote=False)}</b>"]
 
-    if article.price:
-        lines.append(f"💰 {_format_price_line(article.price, previous_price)}")
     if article.delivery:
         lines.append(f"🚚 {html.escape(article.delivery, quote=False)}")
-    if article.likes is not None:
-        lines.append(f"👍 추천 {article.likes}")
 
     text = "\n".join(lines)
 
@@ -104,13 +86,17 @@ def build_markup(article: Article, webapp_link: str | None = None) -> InlineKeyb
 
 
 async def _with_flood_retry(func: Callable[[], Awaitable[T]], max_retries: int = 5) -> T:
-    """RetryAfter(플러드 컨트롤)를 만나면 텔레그램이 알려준 시간만큼 대기 후 재시도한다."""
+    """RetryAfter(플러드 컨트롤)나 일시적인 연결 풀 타임아웃을 만나면 잠깐 쉬었다가 재시도한다."""
     for attempt in range(max_retries):
         try:
             return await func()
         except RetryAfter as e:
             wait = e.retry_after + 1
             logger.warning("Telegram flood control hit, sleeping %.1fs (attempt %d)", wait, attempt + 1)
+            await asyncio.sleep(wait)
+        except TimedOut:
+            wait = 2 * (attempt + 1)
+            logger.warning("Telegram request timed out, retrying in %.1fs (attempt %d)", wait, attempt + 1)
             await asyncio.sleep(wait)
     return await func()
 
@@ -125,14 +111,23 @@ class TelegramNotifier:
         """새 글을 전송하고 (message_id, has_photo)를 반환한다."""
         text = format_message(article)
         markup = build_markup(article, self._webapp_link)
-        await self._limiter.wait(chat_id)
 
         if article.thumbnail_url:
+            # 세로/정사각형 썸네일이 많아 메시지 높이가 들쭉날쭉해지는 걸 막기 위해
+            # 16:9 캔버스(블러 배경 + 중앙 배치)로 정규화한 뒤 파일로 업로드한다.
+            # 처리에 실패하면 원본 URL을 그대로 쓰는 쪽으로 폴백한다.
+            photo_bytes = await fetch_letterboxed(article.thumbnail_url)
+
+            def _make_photo():
+                # 재시도마다 새 InputFile을 만들어야 안전하다 (bytes 스트림 재사용 문제 방지)
+                return InputFile(photo_bytes, filename="thumb.jpg") if photo_bytes else article.thumbnail_url
+
+            await self._limiter.wait(chat_id)
             try:
                 message = await _with_flood_retry(
                     lambda: self._bot.send_photo(
                         chat_id=chat_id,
-                        photo=article.thumbnail_url,
+                        photo=_make_photo(),
                         caption=text,
                         parse_mode=ParseMode.HTML,
                         reply_markup=markup,
@@ -140,7 +135,7 @@ class TelegramNotifier:
                 )
                 return message.message_id, True
             except TelegramError:
-                # 썸네일 URL이 깨졌거나 텔레그램이 가져오지 못하는 경우 텍스트로 폴백
+                # 썸네일을 텔레그램이 못 받는 경우 텍스트로 폴백
                 await self._limiter.wait(chat_id)
 
         message = await _with_flood_retry(
@@ -154,15 +149,8 @@ class TelegramNotifier:
         )
         return message.message_id, False
 
-    async def edit(
-        self,
-        article: Article,
-        chat_id: int,
-        message_id: int,
-        has_photo: bool,
-        previous_price: str | None = None,
-    ) -> None:
-        text = format_message(article, previous_price=previous_price)
+    async def edit(self, article: Article, chat_id: int, message_id: int, has_photo: bool) -> None:
+        text = format_message(article)
         markup = build_markup(article, self._webapp_link)
         await self._limiter.wait(chat_id)
 
