@@ -209,7 +209,9 @@ async def async_main(config_path: str) -> None:
         config.telegram.bot_token,
         config.telegram.admin_chat_id,
         db,
-        [crawler.site_key for crawler in crawlers],
+        # 폴링 크롤러가 없는 웹훅 전용 사이트도 /sites, /status에 나와야 하므로
+        # crawlers 목록이 아니라 config.sites 전체를 기준으로 한다.
+        list(config.sites.keys()),
         config,
         admin_contacts,
     )

@@ -1,9 +1,20 @@
-// 아카라이브 핫딜 목록(https://arca.live/b/hotdeal)을 감시한다.
-// 셀렉터는 src/crawlers/arcalive.py의 _parse_listing()과 반드시 동일하게 유지해야 한다 -
-// 서버 파서와 결과가 어긋나면 같은 글이 다르게 보여서 계속 "새 글"로 오인될 수 있다.
+// 아카라이브의 아무 게시판 목록(https://arca.live/b/<board>)이나 감시한다. 핫딜(/b/hotdeal)
+// 전용 필드(가격/배송/쇼핑몰/종료뱃지) 셀렉터는 src/crawlers/arcalive.py의 _parse_listing()과
+// 동일하게 유지하되, 다른 게시판엔 해당 요소가 아예 없으므로 항상 null로 자연스럽게 빠진다.
 
 (function () {
-  const SITE = "arcalive";
+  // 게시글 상세 페이지(/b/<board>/<id>)에서는 동작하지 않는다 - 목록 페이지(/b/<board>,
+  // 페이지네이션 쿼리 포함)에서만 실행한다.
+  const boardMatch = location.pathname.match(/^\/b\/([\w\d]+)\/?$/);
+  if (!boardMatch) return;
+
+  // 기존에 "arcalive"라는 사이트 키로 이미 배포되어 있던 핫딜 게시판만 하위호환을 위해
+  // 그대로 "arcalive"를 쓰고, 그 외 게시판은 URL의 게시판 슬러그를 그대로 사이트 키로
+  // 쓴다 (서버 config.yaml의 sites.<키>와 이름이 일치해야 한다).
+  const SITE_ALIASES = { hotdeal: "arcalive" };
+  const BOARD_SLUG = boardMatch[1];
+  const SITE = SITE_ALIASES[BOARD_SLUG] || BOARD_SLUG;
+  const LOG_PREFIX = "[arcalive-bridge]";
   const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5분
   const seen = new Set();
 
@@ -30,7 +41,9 @@
   }
 
   function parseRow(row) {
-    const titleTag = row.querySelector("a.title.hybrid-title");
+    // 썸네일 있는 "카드형" 게시판(아카라이브에서 hybrid 클래스가 붙음, 핫딜 게시판 등)은
+    // a.title.hybrid-title을, 썸네일 없는 일반 텍스트 게시판은 a.title만 씁니다.
+    const titleTag = row.querySelector("a.title.hybrid-title") || row.querySelector("a.title");
     if (!titleTag || !titleTag.getAttribute("href")) return null;
     const href = titleTag.getAttribute("href");
     const match = href.match(/\/b\/([\w\d]+)\/(\d+)/);
@@ -129,7 +142,7 @@
   }
 
   async function scanInitialBatch(table) {
-    const rows = table.querySelectorAll(".vrow.hybrid");
+    const rows = table.querySelectorAll(".vrow");
     const articles = [];
     for (const row of rows) {
       const article = await handleRow(row, true);
@@ -137,7 +150,7 @@
     }
     if (articles.length > 0) {
       browser.runtime.sendMessage({ type: "batch", site: SITE, articles });
-      console.log(`[hotdeal-bridge] initial batch sent: ${articles.length} articles`);
+      console.log(`${LOG_PREFIX} [${SITE}] initial batch sent: ${articles.length} articles`);
     }
   }
 
@@ -146,14 +159,14 @@
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
           if (!(node instanceof HTMLElement)) continue;
-          const rows = node.matches?.(".vrow.hybrid")
+          const rows = node.matches?.(".vrow")
             ? [node]
-            : Array.from(node.querySelectorAll?.(".vrow.hybrid") || []);
+            : Array.from(node.querySelectorAll?.(".vrow") || []);
           for (const row of rows) {
             handleRow(row, false).then((article) => {
               if (!article) return;
               browser.runtime.sendMessage({ type: "article", site: SITE, article });
-              console.log(`[hotdeal-bridge] new article sent: ${article.article_id} ${article.title}`);
+              console.log(`${LOG_PREFIX} [${SITE}] new article sent: ${article.article_id} ${article.title}`);
             });
           }
         }
@@ -165,7 +178,7 @@
   async function main() {
     const table = await waitForElement(".list-table");
     if (!table) {
-      console.error("[hotdeal-bridge] .list-table not found - page layout may have changed");
+      console.error(`${LOG_PREFIX} [${SITE}] .list-table not found - page layout may have changed`);
       return;
     }
     await scanInitialBatch(table);
@@ -173,7 +186,7 @@
     setInterval(() => {
       browser.runtime.sendMessage({ type: "heartbeat", site: SITE });
     }, HEARTBEAT_INTERVAL_MS);
-    console.log("[hotdeal-bridge] watching arcalive hotdeal list");
+    console.log(`${LOG_PREFIX} watching arca.live board '${SITE}'`);
   }
 
   main();
