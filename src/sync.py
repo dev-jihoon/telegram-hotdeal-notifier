@@ -139,6 +139,7 @@ async def _process_article(
     now: str,
     known_max_id: int | None,
     silent_catchup: bool,
+    raw_image_bytes: bytes | None = None,
 ) -> None:
     if existing is None:
         # 게시글 번호는 사이트가 순차 발급하므로, 지금까지 관측한 최고 번호보다 작은
@@ -160,7 +161,7 @@ async def _process_article(
                     site, article.article_id, known_max_id,
                 )
             return
-        message_id, has_photo = await notifier.send(article, chat_id)
+        message_id, has_photo = await notifier.send(article, chat_id, raw_image_bytes=raw_image_bytes)
         await db.insert_article(article, chat_id, message_id, has_photo, now)
         logger.info("[%s] new article %s", site, article.article_id)
         return
@@ -241,6 +242,63 @@ async def _process_article(
         )
     else:
         await db.touch_last_seen(site, article.article_id, now)
+
+
+async def ingest_webhook_article(
+    db: Database,
+    notifier: TelegramNotifier,
+    site: str,
+    chat_id: int,
+    crawl_config: CrawlConfig,
+    article: Article,
+    raw_image_bytes: bytes | None = None,
+) -> None:
+    """브라우저 확장 등 웹훅으로 들어온 글 하나를 처리한다.
+
+    폴링 크롤러의 sync_site와 달리 목록 전체가 아니라 매번 글 하나씩 들어오므로, 그때그때
+    해당 글의 추적 상태만 조회해서 _process_article에 그대로 흘려보낸다. known_max_id
+    체크는 필요 없다(목록을 훑어서 뒤늦게 발견되는 게 아니라 확장이 실시간으로 감지한
+    글이라 "오래된 글 재노출" 문제 자체가 없다).
+    """
+    if not await db.get_site_bootstrapped(site):
+        logger.warning(
+            "[%s] webhook article %s ignored - site not bootstrapped yet (send an initial batch first)",
+            site, article.article_id,
+        )
+        return
+    now = _now_iso()
+    tracked = await db.get_active_articles(site)
+    existing = tracked.get(article.article_id)
+    await _process_article(
+        db, notifier, site, chat_id, crawl_config, article, existing, now,
+        known_max_id=None, silent_catchup=False, raw_image_bytes=raw_image_bytes,
+    )
+
+
+async def ingest_webhook_batch(db: Database, site: str, articles: list[Article]) -> bool:
+    """확장 프로그램이 페이지를 처음 열었을 때 보내는 전체 목록으로 기준선을 잡는다.
+
+    폴링 크롤러의 최초 부트스트랩과 같은 취지 - 조용히 저장만 하고 알리지 않는다(안 그러면
+    이미 존재하던 글 수십 개가 한꺼번에 "신규"로 전송돼 도배가 된다). 이미 부트스트랩된
+    사이트에서 다시 호출되면 그냥 무시한다(그 다음부터는 단건 웹훅이 이어받는다).
+    성공적으로 기준선을 잡았으면 True를 반환한다.
+    """
+    if await db.get_site_bootstrapped(site):
+        return False
+    if len(articles) < 3:
+        logger.warning(
+            "[%s] webhook bootstrap batch returned only %d articles, not confirming baseline yet",
+            site, len(articles),
+        )
+        return False
+    now = _now_iso()
+    await db.insert_baseline_articles(articles, now)
+    await db.set_site_bootstrapped(site)
+    logger.info(
+        "[%s] bootstrapped via webhook with %d existing articles (no telegram messages sent)",
+        site, len(articles),
+    )
+    return True
 
 
 async def purge_expired(db: Database, retention_days: int) -> None:

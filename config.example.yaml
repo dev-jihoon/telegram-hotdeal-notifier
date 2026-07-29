@@ -33,6 +33,15 @@ webapp:
   # 이걸 채워두면 채널/그룹 핫딜 메시지에도 "🔥 인기 핫딜" 버튼이 붙습니다 (t.me/bot/short_name
   # 딥링크 - 텔레그램이 이 형식만 채널에서도 진짜 미니앱으로 열어줍니다). 비워두면 이 버튼은 안 붙습니다.
 
+webhook:
+  enabled: false                     # true로 켜면 브라우저 확장(extension/)이 보내는 웹훅을 받습니다.
+  # secret: "REPLACE_ME_WITH_LONG_RANDOM_STRING"  # extension/config.js의 WEBHOOK_SECRET과
+  # 반드시 동일해야 합니다. 이 값이 없으면 webhook.enabled=true여도 엔드포인트가 404를 반환합니다.
+  heartbeat_stale_minutes: 30        # 확장이 이만큼(분) 아무 신호도 안 보내면 admin_chat_id로 경고합니다
+  # (웹탑/브라우저 세션이 죽었다는 뜻 - Cloudflare가 서버 크롤러를 막는 사이트(아카라이브 등)를
+  # 대신 감시해주는 브라우저 확장이 살아있는지 확인하는 용도입니다. extension/README나 저장소
+  # 루트 README의 "브라우저 확장" 절 참고.)
+
 display:
   # 아래 값들은 텔레그램 관리자 채팅의 /settings 명령으로도 재배포 없이 바로 편집할 수
   # 있습니다. 여기 값은 관리자가 한 번도 편집하지 않았을 때만 적용되는 기본값입니다.
@@ -54,6 +63,10 @@ sites:
     enabled: true
     interval_seconds: 60
   arcalive:
+    # Cloudflare 차단이 너무 강해 서버 크롤러(requests/curl_cffi/헤드리스 브라우저 전부)로는
+    # 뚫리지 않습니다. extension/ 브라우저 확장이 웹훅으로 대신 글을 밀어넣는 방식을 씁니다
+    # (webhook.enabled: true 필요). 확장을 아직 안 붙였다면 enabled: false로 꺼두세요 - 폴링
+    # 크롤러를 켜둬봤자 계속 403만 받습니다.
     enabled: true
     interval_seconds: 60
   fmkorea:

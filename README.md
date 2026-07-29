@@ -168,6 +168,53 @@ server {
 헤더를 봇 토큰으로 HMAC 검증해서 확인하고, 검증에 실패하면 403을 반환합니다 — 아무나 이 API를
 긁어가지 못하도록 하는 최소한의 보호 장치입니다.
 
+## 브라우저 확장으로 Cloudflare 우회 (아카라이브)
+
+아카라이브는 Cloudflare 봇 차단이 매우 강해서 `curl_cffi` TLS 위장, 헤드리스/헤드풀
+Playwright(Chromium/Firefox), 실제 브라우저 쿠키 주입까지 시도했지만 서버에서 실행하는 모든
+자동화 방식이 동일하게 차단됩니다. 대신 **이미 Cloudflare 챌린지를 통과한 상태로 계속 켜둘 수
+있는 브라우저 세션**(예: webtop 컨테이너의 Firefox)에 `extension/` 폴더의 확장 프로그램을 설치해
+아카라이브 핫딜 목록 페이지를 열어두면, 확장이 DOM을 감시하다가 새 글이 뜨는 순간(아카라이브는
+목록을 웹소켓으로 실시간 갱신합니다) 제목/가격/썸네일 이미지까지 전부 클라이언트에서 추출해
+봇 서버의 웹훅으로 전송합니다. 서버는 그 데이터를 기존 신규글 처리 파이프라인에 그대로 흘려보낼
+뿐, 아카라이브에 직접 요청을 보내지 않습니다.
+
+**서버 설정**
+
+1. `config.yaml`에서 `webhook.enabled: true`, `webhook.secret`에 긴 무작위 문자열을 채웁니다.
+2. `sites.arcalive.interval_seconds`짜리 폴링 크롤러는 계속 403만 받으므로,
+   `sites.arcalive.enabled: false`로 꺼서 불필요한 요청/실패 알림을 막는 걸 권장합니다
+   (웹훅 데이터는 `enabled` 값과 무관하게 계속 처리됩니다 — 이 값은 폴링 루프에만 영향을
+   줍니다).
+
+**확장 설정 및 설치**
+
+1. `cp extension/config.example.js extension/config.js` 후, `WEBHOOK_BASE_URL`(봇 서버의
+   `webapp.public_url`과 동일)과 `WEBHOOK_SECRET`(`config.yaml`의 `webhook.secret`과 동일)을
+   채웁니다. `extension/config.js`는 시크릿이 들어있어 git에 커밋되지 않습니다.
+2. Cloudflare를 이미 통과한 Firefox 세션(webtop 등)에 `extension/` 폴더를 임시 부가 기능으로
+   로드합니다: `about:debugging` → "이 Firefox" → "임시 부가 기능 로드" → `manifest.json` 선택.
+   (재부팅/컨테이너 재시작마다 다시 로드해야 합니다 — 영구 설치하려면 Firefox 엔터프라이즈
+   정책(`policies.json`)의 `ExtensionSettings`로 서명되지 않은 확장을 허용하도록 설정해야
+   합니다.)
+3. 그 세션에서 `https://arca.live/b/hotdeal`을 열어두고 계속 켜져 있게 둡니다. 페이지를 열면
+   확장이 현재 목록을 한 번 스캔해 "기준선"으로 서버에 보내고(이때는 텔레그램 전송 없음),
+   이후 새로 추가되는 글만 실시간으로 전송합니다.
+
+**동작 확인**
+
+- 브라우저 콘솔(F12)에 `[hotdeal-bridge] ...` 로그가 찍히면 확장이 정상 동작 중입니다.
+- 서버의 `/status`(관리자 `/status` 명령)에서 아카라이브의 "마지막 성공" 시각이 계속
+  갱신되면 웹훅이 도착하고 있다는 뜻입니다 — 폴링을 꺼둔 사이트라도 웹훅/하트비트가
+  `last_success_at`을 갱신합니다.
+- 확장이 `webhook.heartbeat_stale_minutes`(기본 30분) 넘게 아무 신호도 안 보내면(하트비트
+  포함) 관리자 채팅으로 경고가 갑니다 — 브라우저 세션이나 확장이 죽었을 가능성이 큽니다.
+
+**보안 참고**: 웹훅 엔드포인트(`/webhook/{site}/article`, `/batch`, `/heartbeat`)는
+`X-Webhook-Secret` 헤더가 `webhook.secret`과 정확히 일치해야만 요청을 받아들입니다
+(`hmac.compare_digest`로 비교, 타이밍 공격 방지). `webhook.enabled`가 꺼져 있거나
+`webhook.secret`이 비어 있으면 이 엔드포인트들은 항상 404를 반환합니다.
+
 ## 알려진 제약사항
 
 - **가격/추천수**: 사이트가 가격을 별도 필드로 제공하면(아카라이브, 퀘이사존, 에펨코리아, 다모앙,
@@ -175,6 +222,9 @@ server {
   정규식으로 가격을 추출하므로 100% 정확하지 않을 수 있습니다.
 - **카테고리**: 사이트가 카테고리/분류를 제공하는 경우에만 표시됩니다(다모앙, zod는 목록에서
   카테고리를 제공하지 않아 항상 생략됩니다).
+- **아카라이브**: Cloudflare 차단이 너무 강해 서버에서 실행하는 어떤 자동화 방식으로도 뚫리지
+  않아, 폴링 크롤러 대신 브라우저 확장(`extension/`)이 웹훅으로 글을 밀어넣는 방식을 씁니다.
+  자세한 설정은 위 "브라우저 확장으로 Cloudflare 우회" 절을 참고하세요.
 - **퀘이사존/다모앙/zod**: Cloudflare 봇 차단이 걸려 있어 브라우저 TLS/HTTP2 핑거프린트를
   흉내내는 `curl_cffi`로 우회합니다. 서버 환경(특히 IP 평판)에 따라 다시 막힐 수 있고,
   Cloudflare 설정이 더 엄격한 사이트는 curl_cffi 흉내로도 못 뚫는 경우가 있습니다(직접
@@ -225,6 +275,9 @@ server {
 | `webapp.port` | 미니 웹앱 웹서버 포트 | 8080 |
 | `webapp.public_url` | 미니 웹앱의 실제 HTTPS 주소 (nginx 등으로 연결) | (없음) |
 | `webapp.short_name` | BotFather `/newapp`으로 등록한 Mini App 짧은 이름 (채널 메시지 버튼용) | (없음) |
+| `webhook.enabled` | 브라우저 확장 웹훅 수신 여부 | false |
+| `webhook.secret` | 확장의 `WEBHOOK_SECRET`과 일치해야 하는 인증 시크릿 | (없음) |
+| `webhook.heartbeat_stale_minutes` | 이만큼(분) 확장 신호가 끊기면 관리자에게 경고 | 30 |
 | `display.show_site_name` | 메시지에 `[뽐뿌]` 같은 사이트명 접두사 표시 여부 | true |
 | `display.webapp_button_label` / `webapp_title` / `webapp_empty_message` | 미니앱 관련 버튼/제목/빈 목록 문구 | 코드 참고 |
 | `display.digest_header` / `digest_mall_ranking_label` | 다이제스트 헤더/쇼핑몰 랭킹 라벨 문구 | 코드 참고 |

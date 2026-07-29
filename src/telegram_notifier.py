@@ -13,7 +13,7 @@ from telegram.error import BadRequest, RetryAfter, TelegramError, TimedOut
 
 from .config import DisplayConfig
 from .db import AdminContact
-from .image_processing import fetch_letterboxed
+from .image_processing import fetch_letterboxed, letterbox_raw_bytes
 from .models import Article, ArticleStatus
 
 logger = logging.getLogger(__name__)
@@ -133,18 +133,30 @@ class TelegramNotifier:
         self._display = display
         self._admin_contacts = admin_contacts if admin_contacts is not None else []
 
-    async def send(self, article: Article, chat_id: int) -> tuple[int, bool]:
-        """새 글을 전송하고 (message_id, has_photo)를 반환한다."""
+    async def send(
+        self, article: Article, chat_id: int, raw_image_bytes: bytes | None = None
+    ) -> tuple[int, bool]:
+        """새 글을 전송하고 (message_id, has_photo)를 반환한다.
+
+        raw_image_bytes가 주어지면(웹훅으로 이미지를 이미 받아온 경우) 원본 사이트에
+        다시 요청을 보내지 않고 그 바이트를 바로 정규화해서 쓴다.
+        """
         text = format_message(article, self._display.show_site_name)
         markup = build_markup(
             article, self._webapp_link, self._display.webapp_button_label, self._admin_contacts
         )
 
-        if article.thumbnail_url:
+        if raw_image_bytes is not None or article.thumbnail_url:
             # 세로/정사각형 썸네일이 많아 메시지 높이가 들쭉날쭉해지는 걸 막기 위해
             # 16:9 캔버스(블러 배경 + 중앙 배치)로 정규화한 뒤 파일로 업로드한다.
-            # 처리에 실패하면 원본 URL을 그대로 쓰는 쪽으로 폴백한다.
-            photo_bytes = await fetch_letterboxed(article.thumbnail_url)
+            # 처리에 실패하면 원본 URL을 그대로 쓰는 쪽으로 폴백한다(둘 다 없으면 텍스트로).
+            # raw_image_bytes가 있는데 정규화가 실패해도, 원본 사이트에 다시 요청하는 대신
+            # (그러면 웹훅으로 우회한 의미가 없다) URL 문자열 폴백만 쓴다 - 그건 텔레그램
+            # 서버가 직접 가져가는 거라 우리 서버가 그 사이트에 요청하는 게 아니다.
+            if raw_image_bytes is not None:
+                photo_bytes = await letterbox_raw_bytes(raw_image_bytes)
+            else:
+                photo_bytes = await fetch_letterboxed(article.thumbnail_url)
 
             def _make_photo():
                 # 재시도마다 새 InputFile을 만들어야 안전하다 (bytes 스트림 재사용 문제 방지)

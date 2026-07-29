@@ -68,6 +68,17 @@ class DisplayConfig:
 
 
 @dataclass
+class WebhookConfig:
+    """Cloudflare 차단이 너무 강한 사이트(아카라이브 등)를 브라우저 확장에서 대신 감지해
+    서버로 밀어넣을 때 쓰는 인증 - extension/ 폴더 참고."""
+
+    enabled: bool = False
+    secret: str | None = None
+    # 하트비트가 이 시간(분) 이상 안 오면 관리자에게 "웹훅 소스가 죽은 것 같다" 알림을 보낸다.
+    heartbeat_stale_minutes: int = 30
+
+
+@dataclass
 class Config:
     telegram: TelegramConfig
     database: DatabaseConfig
@@ -75,6 +86,7 @@ class Config:
     digest: DigestConfig
     webapp: WebappConfig
     display: DisplayConfig
+    webhook: WebhookConfig
     sites: dict[str, SiteConfig] = field(default_factory=dict)
 
 
@@ -88,6 +100,7 @@ def load_config(path: str | Path) -> Config:
     digest = DigestConfig(**raw.get("digest", {}))
     webapp = WebappConfig(**raw.get("webapp", {}))
     display = DisplayConfig(**raw.get("display", {}))
+    webhook = WebhookConfig(**raw.get("webhook", {}))
 
     sites: dict[str, SiteConfig] = {}
     for key, site_raw in (raw.get("sites") or {}).items():
@@ -96,5 +109,5 @@ def load_config(path: str | Path) -> Config:
 
     return Config(
         telegram=telegram, database=database, crawl=crawl,
-        digest=digest, webapp=webapp, display=display, sites=sites,
+        digest=digest, webapp=webapp, display=display, webhook=webhook, sites=sites,
     )

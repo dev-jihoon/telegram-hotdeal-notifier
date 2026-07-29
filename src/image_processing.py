@@ -46,10 +46,19 @@ async def fetch_letterboxed(url: str, timeout: int = 10) -> bytes | None:
         logger.debug("failed to download thumbnail %s", url, exc_info=True)
         return None
 
+    return await letterbox_raw_bytes(raw)
+
+
+async def letterbox_raw_bytes(raw: bytes) -> bytes | None:
+    """이미 확보된 이미지 바이트를 16:9 캔버스로 정규화한다.
+
+    브라우저 확장(웹훅 소스)처럼 이미지를 이미 다운로드해서 보내오는 경우, 서버가
+    원본 사이트에 또 요청을 보낼 필요 없이 이 함수로 바로 정규화한다.
+    """
     try:
         return await asyncio.to_thread(_letterbox, raw)
     except Exception:
-        logger.warning("failed to letterbox thumbnail %s", url, exc_info=True)
+        logger.warning("failed to letterbox raw image bytes", exc_info=True)
         return None
 
 

@@ -101,6 +101,40 @@ async def run_retention_loop(db: Database, config: Config) -> None:
             logger.exception("retention cleanup failed")
 
 
+async def run_webhook_health_loop(db: Database, notifier: TelegramNotifier, config: Config) -> None:
+    """브라우저 확장(웹훅)이 보내는 하트비트가 끊기면 관리자에게 알린다.
+
+    폴링 크롤러가 같은 사이트에서 아직 같이 돌고 있으면 last_success_at을 폴링 쪽도 갱신해서
+    당분간 이 체크가 무의미해질 수 있다 - 웹훅으로 완전히 넘어간 뒤(/sites에서 폴링을 끈
+    뒤)부터 의미가 생긴다. 사이트당 한 번만 알리고, 복구되면 다시 알릴 수 있도록 리셋한다.
+    """
+    if not config.webhook.enabled:
+        return
+    threshold = timedelta(minutes=config.webhook.heartbeat_stale_minutes)
+    alerted: set[str] = set()
+    while True:
+        await asyncio.sleep(300)
+        try:
+            report = await db.get_site_report(list(config.sites))
+            for site, info in report.items():
+                last = info.get("last_success_at")
+                if last is None:
+                    continue
+                age = datetime.now(timezone.utc) - datetime.fromisoformat(last)
+                if age >= threshold:
+                    if site not in alerted:
+                        alerted.add(site)
+                        await notifier.send_alert(
+                            config.telegram.admin_chat_id,
+                            f"⚠️ [{SITE_LABELS.get(site, site)}] {config.webhook.heartbeat_stale_minutes}분"
+                            f" 넘게 아무 신호(웹훅/크롤)가 없습니다 - 웹탑 세션이 죽었을 수 있습니다.",
+                        )
+                else:
+                    alerted.discard(site)
+        except Exception:
+            logger.exception("webhook health check failed")
+
+
 def _seconds_until_next(hour: int, minute: int) -> float:
     now = datetime.now(KST)
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -182,8 +216,10 @@ async def async_main(config_path: str) -> None:
     await admin_bot.start()
 
     webapp_runner = None
-    if config.webapp.enabled:
-        webapp_runner = await start_webapp(db, config.telegram.bot_token, config.webapp.port, config.display)
+    if config.webapp.enabled or config.webhook.enabled:
+        webapp_runner = await start_webapp(
+            db, config.telegram.bot_token, config.webapp.port, config.display, config, notifier
+        )
         if config.webapp.public_url:
             # 메뉴 버튼(채팅창 왼쪽 아래)은 1:1 대화 전용 web_app 타입이라 항상 public_url을
             # 직접 써야 한다 (t.me 딥링크가 아니라).
@@ -204,6 +240,7 @@ async def async_main(config_path: str) -> None:
         # on/off와 시각은 매 사이클 config.digest에서 새로 읽으므로, /settings로 바꾼
         # 값도 재시작 없이 반영된다 - 그래서 enabled 여부와 무관하게 항상 띄워둔다.
         asyncio.create_task(run_digest_loop(db, notifier, config)),
+        asyncio.create_task(run_webhook_health_loop(db, notifier, config)),
     ]
     logger.info(
         "digest loop started (enabled=%s, %02d:%02d KST, top %d)",

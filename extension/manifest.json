@@ -1,0 +1,24 @@
+{
+  "manifest_version": 2,
+  "name": "Hotdeal Bot Bridge (Arcalive)",
+  "version": "1.0.0",
+  "description": "아카라이브 핫딜 목록 페이지를 감시해서 새 글을 봇 서버 웹훅으로 전달합니다. Cloudflare가 서버 크롤러는 막아도, 이미 통과한 이 브라우저 세션은 막지 않는다는 점을 이용합니다.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "hotdeal-bridge@dev-jihoon.local",
+      "strict_min_version": "78.0"
+    }
+  },
+  "permissions": ["<all_urls>", "storage"],
+  "background": {
+    "scripts": ["config.js", "background.js"],
+    "persistent": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://arca.live/b/hotdeal*"],
+      "js": ["content_script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

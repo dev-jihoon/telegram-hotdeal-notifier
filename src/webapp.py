@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl
 
 from aiohttp import web
 
-from .config import DisplayConfig
+from .config import Config, DisplayConfig
 from .db import Database
+from .models import Article, ArticleStatus
 from .price import parse_won
-from .telegram_notifier import SITE_LABELS
+from .sync import ingest_webhook_article, ingest_webhook_batch
+from .telegram_notifier import SITE_LABELS, TelegramNotifier
 from .time_utils import start_of_today_kst_iso
 
 logger = logging.getLogger(__name__)
@@ -74,8 +78,46 @@ def _serialize(article, old_price: str | None, show_site_name: bool) -> dict:
     }
 
 
-def create_app(db: Database, bot_token: str, display: DisplayConfig) -> web.Application:
-    app = web.Application()
+def _article_from_payload(site: str, data: dict) -> Article:
+    status_raw = (data.get("status") or "active").lower()
+    status = {
+        "active": ArticleStatus.ACTIVE,
+        "ended": ArticleStatus.ENDED,
+        "soldout": ArticleStatus.SOLDOUT,
+    }.get(status_raw, ArticleStatus.ACTIVE)
+    return Article(
+        site=site,
+        article_id=str(data["article_id"]),
+        title=data["title"],
+        url=data["url"],
+        price=data.get("price"),
+        likes=data.get("likes"),
+        thumbnail_url=data.get("thumbnail_url"),
+        category=data.get("category"),
+        mall=data.get("mall"),
+        delivery=data.get("delivery"),
+        status=status,
+    )
+
+
+def _decode_image(data: dict) -> bytes | None:
+    b64 = data.get("image_base64")
+    if not b64:
+        return None
+    try:
+        # 확장 프로그램이 data URL("data:image/jpeg;base64,...")로 보낼 수도 있어 접두사를 벗긴다.
+        if "," in b64 and b64.strip().startswith("data:"):
+            b64 = b64.split(",", 1)[1]
+        return base64.b64decode(b64)
+    except Exception:
+        logger.warning("failed to decode image_base64 for webhook article %s", data.get("article_id"))
+        return None
+
+
+def create_app(
+    db: Database, bot_token: str, display: DisplayConfig, config: Config, notifier: TelegramNotifier
+) -> web.Application:
+    app = web.Application(client_max_size=16 * 1024 * 1024)  # 이미지가 base64로 들어와서 넉넉히 잡음
 
     async def index(request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
@@ -101,14 +143,84 @@ def create_app(db: Database, bot_token: str, display: DisplayConfig) -> web.Appl
             },
         })
 
+    def _check_webhook_auth(request: web.Request) -> web.Response | None:
+        if not config.webhook.enabled or not config.webhook.secret:
+            return web.json_response({"error": "webhook disabled"}, status=404)
+        provided = request.headers.get("X-Webhook-Secret", "")
+        if not hmac.compare_digest(provided, config.webhook.secret):
+            return web.json_response({"error": "unauthorized"}, status=403)
+        return None
+
+    async def _touch_site_alive(site: str) -> None:
+        # /status 패널이 웹훅 소스의 건강 상태도 같이 보여주도록, 폴링 크롤러와 같은
+        # site_state.last_success_at을 갱신한다(하트비트/글 수신 둘 다 "살아있다"는 신호).
+        await db.record_crawl_success(site, datetime.now(timezone.utc).isoformat())
+
+    async def webhook_article(request: web.Request) -> web.Response:
+        auth_error = _check_webhook_auth(request)
+        if auth_error:
+            return auth_error
+        site = request.match_info["site"]
+        if not await db.get_site_enabled(site):
+            return web.json_response({"status": "site disabled, ignored"})
+        try:
+            data = await request.json()
+            article = _article_from_payload(site, data)
+        except Exception:
+            return web.json_response({"error": "invalid payload"}, status=400)
+
+        image_bytes = _decode_image(data)
+        chat_id = config.sites[site].chat_id if site in config.sites and config.sites[site].chat_id else config.telegram.default_chat_id
+        try:
+            await ingest_webhook_article(db, notifier, site, chat_id, config.crawl, article, raw_image_bytes=image_bytes)
+        except Exception:
+            logger.exception("[%s] failed to ingest webhook article %s", site, article.article_id)
+            return web.json_response({"error": "ingest failed"}, status=500)
+        await _touch_site_alive(site)
+        return web.json_response({"status": "ok"})
+
+    async def webhook_batch(request: web.Request) -> web.Response:
+        auth_error = _check_webhook_auth(request)
+        if auth_error:
+            return auth_error
+        site = request.match_info["site"]
+        if not await db.get_site_enabled(site):
+            return web.json_response({"status": "site disabled, ignored"})
+        try:
+            data = await request.json()
+            articles = [_article_from_payload(site, item) for item in data["articles"]]
+        except Exception:
+            return web.json_response({"error": "invalid payload"}, status=400)
+
+        try:
+            bootstrapped_now = await ingest_webhook_batch(db, site, articles)
+        except Exception:
+            logger.exception("[%s] failed to ingest webhook batch", site)
+            return web.json_response({"error": "ingest failed"}, status=500)
+        await _touch_site_alive(site)
+        return web.json_response({"status": "ok", "bootstrapped": bootstrapped_now})
+
+    async def webhook_heartbeat(request: web.Request) -> web.Response:
+        auth_error = _check_webhook_auth(request)
+        if auth_error:
+            return auth_error
+        site = request.match_info["site"]
+        await _touch_site_alive(site)
+        return web.json_response({"status": "ok"})
+
     app.router.add_get("/", index)
     app.router.add_get("/api/deals", api_deals)
+    app.router.add_post("/webhook/{site}/article", webhook_article)
+    app.router.add_post("/webhook/{site}/batch", webhook_batch)
+    app.router.add_post("/webhook/{site}/heartbeat", webhook_heartbeat)
     app.router.add_static("/static/", STATIC_DIR)
     return app
 
 
-async def start_webapp(db: Database, bot_token: str, port: int, display: DisplayConfig) -> web.AppRunner:
-    app = create_app(db, bot_token, display)
+async def start_webapp(
+    db: Database, bot_token: str, port: int, display: DisplayConfig, config: Config, notifier: TelegramNotifier
+) -> web.AppRunner:
+    app = create_app(db, bot_token, display, config, notifier)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
