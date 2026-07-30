@@ -61,13 +61,13 @@ class AdminBot:
     def __init__(
         self,
         bot_token: str,
-        admin_chat_id: int,
+        admin_chat_ids: list[int],
         db: Database,
         site_keys: list[str],
         config: Config,
         admin_contacts: list[AdminContact],
     ):
-        self._admin_chat_id = admin_chat_id
+        self._admin_chat_ids = admin_chat_ids
         self._db = db
         self._site_keys = site_keys
         self._config = config
@@ -75,8 +75,9 @@ class AdminBot:
         # 통째로 새로 안 만들고 그 자리에서 수정하면) 재시작 없이 다음 메시지부터 바로 반영된다.
         self._admin_contacts = admin_contacts
         # 텍스트로 답장받아야 하는 설정(문자열/숫자값)을 편집 중일 때, 그 설정 키를 들고
-        # 있는다 - 다음 일반 메시지가 오면 이 값에 대한 답변으로 처리한다. 관리자 한 명만
-        # 쓰는 걸 전제로 한 단순한 상태다.
+        # 있는다 - 다음 일반 메시지가 오면 이 값에 대한 답변으로 처리한다. 봇 인스턴스
+        # 전체에서 공유되는 단순한 상태라, 관리자가 여러 명이면 동시에 서로 다른 편집을
+        # 진행할 때 꼬일 수 있다(흔치 않은 상황이라 감수한다).
         self._pending_edit: str | None = None
         self._pending_admin_add = False
         self._app = (
@@ -105,13 +106,13 @@ class AdminBot:
 
     def _is_admin(self, update: Update) -> bool:
         # 콜백쿼리는 버튼이 달린 "메시지가 있는 채팅"이 아니라 실제로 누른 사람(from_user)을
-        # 기준으로 판단해야 한다 - 메시지 자체는 항상 admin_chat_id의 1:1 대화에서만
-        # 생성되지만, 신원 확인은 클릭한 사람 기준으로 하는 게 더 안전하다.
+        # 기준으로 판단해야 한다 - 메시지 자체는 항상 admin_chat_ids 중 하나의 1:1
+        # 대화에서만 생성되지만, 신원 확인은 클릭한 사람 기준으로 하는 게 더 안전하다.
         if update.callback_query is not None:
             user = update.callback_query.from_user
-            return user is not None and user.id == self._admin_chat_id
+            return user is not None and user.id in self._admin_chat_ids
         chat = update.effective_chat
-        return chat is not None and chat.id == self._admin_chat_id
+        return chat is not None and chat.id in self._admin_chat_ids
 
     # ---- /start ------------------------------------------------------
 
@@ -438,11 +439,19 @@ class AdminBot:
             BotCommand("settings", "문구/다이제스트/크롤링 설정 편집"),
             BotCommand("admins", "관리자 1:1 문의 버튼 추가/삭제"),
         ]
-        await self._app.bot.set_my_commands(
-            commands, scope=BotCommandScopeChat(chat_id=self._admin_chat_id)
-        )
+        for chat_id in self._admin_chat_ids:
+            try:
+                await self._app.bot.set_my_commands(
+                    commands, scope=BotCommandScopeChat(chat_id=chat_id)
+                )
+            except Exception:
+                # 그 chat_id가 아직 봇과 1:1 대화를 시작(/start)하지 않았으면 텔레그램이
+                # "chat not found"를 준다 - 명령어 자동완성만 못 뜨는 것뿐이고 실제 권한
+                # 체크(_is_admin)와는 무관하니 그냥 건너뛴다.
+                logger.warning("failed to register command scope for admin %s", chat_id, exc_info=True)
         logger.info(
-            "Admin bot polling started (/start, /sites, /status, /settings, /admins available to admin_chat_id)"
+            "Admin bot polling started (/start, /sites, /status, /settings, /admins available to %s)",
+            self._admin_chat_ids,
         )
 
     async def stop(self) -> None:

@@ -173,8 +173,8 @@ def create_app(
         await _touch_site_alive(site)
         if site in challenge_alerted:
             challenge_alerted.discard(site)
-            await notifier.send_alert(
-                config.telegram.admin_chat_id,
+            await notifier.send_alert_to_admins(
+                config.telegram.all_admin_chat_ids,
                 f"✅ [{SITE_LABELS.get(site, site)}] 목록이 다시 정상적으로 수신되고 있습니다.",
             )
         return web.json_response({"status": "ok"})
@@ -199,8 +199,8 @@ def create_app(
         site = request.match_info["site"]
         if site not in challenge_alerted:
             challenge_alerted.add(site)
-            await notifier.send_alert(
-                config.telegram.admin_chat_id,
+            await notifier.send_alert_to_admins(
+                config.telegram.all_admin_chat_ids,
                 f"🚧 [{SITE_LABELS.get(site, site)}] 브라우저 확장이 목록을 못 읽고 있습니다 - "
                 f"Cloudflare 챌린지가 다시 떴을 가능성이 높습니다. webtop 세션에서 수동으로 "
                 f"통과시켜주세요.",

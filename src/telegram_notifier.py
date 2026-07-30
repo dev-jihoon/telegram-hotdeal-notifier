@@ -15,6 +15,7 @@ from .config import DisplayConfig
 from .db import AdminContact
 from .image_processing import fetch_letterboxed
 from .models import Article, ArticleStatus
+from .price import strip_leading_mall_tag
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ def format_message(article: Article, show_site_name: bool = True) -> str:
         prefix += f"[{html.escape(article.mall, quote=False)}]"
     if article.category:
         prefix += f"[{html.escape(article.category, quote=False)}]"
-    title = html.escape(article.title, quote=False)
+    title = html.escape(strip_leading_mall_tag(article.title, article.mall), quote=False)
     lines = [f"<b>{prefix} {title}</b>" if prefix else f"<b>{title}</b>"]
 
     # 가격/배송비를 "22,210원/무료" 형태로 한 줄에 표시 (추천수는 계속 표시하지 않음)
@@ -232,6 +233,15 @@ class TelegramNotifier:
     async def send_alert(self, chat_id: int, text: str) -> None:
         await self._limiter.wait(chat_id)
         await _with_flood_retry(lambda: self._bot.send_message(chat_id=chat_id, text=text))
+
+    async def send_alert_to_admins(self, chat_ids: list[int], text: str) -> None:
+        """관리자가 여러 명이면 전부에게 같은 알림을 보낸다. 한 명에게 실패해도
+        (차단/탈퇴 등) 나머지에게는 계속 보낸다."""
+        for chat_id in chat_ids:
+            try:
+                await self.send_alert(chat_id, text)
+            except Exception:
+                logger.exception("failed to send admin alert to %s", chat_id)
 
     async def send_digest_text(self, chat_id: int, text: str) -> None:
         """다이제스트 요약 텍스트를 전송한다.

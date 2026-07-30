@@ -5,13 +5,18 @@
 // 그다음엔 탭은 그대로 두고 fetch()로 같은 URL을 주기적으로 다시 받아오는 방식으로
 // 바꿨는데, 이것도 실측해보니 Cloudflare가 콘텐츠 스크립트의 fetch() 요청만 따로
 // 403으로 막았다(같은 브라우저/쿠키인데도 일반 페이지 이동과는 다르게 취급됨). 그래서
-// 지금은 아예 location.reload()로 진짜 페이지 이동을 매번 일으킨다 - 이러면 매 새로고침마다
-// 콘텐츠 스크립트가 처음부터 다시 실행되므로, 그 시점에 라이브 문서를 한 번 스캔해 보내고
-// 다음 새로고침을 예약하는 식으로 폴링 루프를 흉내낸다. 신규/수정/삭제 판정은 서버가
-// (다른 사이트의 폴링 크롤러와 완전히 동일한 로직으로) 처리한다 - 그래서 이미지도 여기서
-// 미리 안 받아온다: 어차피 서버가 신규로 확정한 글만 실제로 이미지가 필요한데, 그건 이
-// 시점엔 알 수 없고, 서버의 기존 폴백(원본 썸네일 URL 직접 요청 → 실패 시 URL만 텔레그램에
-// 넘겨 텔레그램 서버가 대신 가져가게 함)이 이미 있어 대부분 그걸로 충분하다.
+// location.reload()로 진짜 페이지 이동을 매번 일으키는 방식으로 바꿨는데, 이번엔 탭이
+// (noVNC에 아무도 접속 안 해있는 등) 오래 백그라운드에 있으면 페이지 자체의
+// setTimeout이 브라우저에 의해 강하게 스로틀링돼서 새로고침이 밀리는 문제가 있었다
+// (웹탑에 들어가야 그제서야 밀린 게 한꺼번에 처리됨). 그래서 새로고침 스케줄링
+// 자체를 background.js의 alarms API로 옮겼다 - 이건 탭 가시성과 무관하게 계속
+// 정확히 발화한다. 이 파일은 로드될 때마다(최초 진입 + 매 새로고침마다) 자신을
+// background.js에 등록해서, background.js가 주기적으로 이 탭을 리로드해주게 한다.
+// 신규/수정/삭제 판정은 서버가 (다른 사이트의 폴링 크롤러와 완전히 동일한 로직으로)
+// 처리한다 - 그래서 이미지도 여기서 미리 안 받아온다: 어차피 서버가 신규로 확정한
+// 글만 실제로 이미지가 필요한데, 그건 이 시점엔 알 수 없고, 서버의 기존 폴백(원본
+// 썸네일 URL 직접 요청 → 실패 시 URL만 텔레그램에 넘겨 텔레그램 서버가 대신
+// 가져가게 함)이 이미 있어 대부분 그걸로 충분하다.
 //
 // 셀렉터는 src/crawlers/arcalive.py의 _parse_listing()과 최대한 동일하게 유지한다 -
 // 서버 파서와 결과가 어긋나면 같은 글이 다르게 보여서 계속 "변경됨"으로 오인될 수 있다.
@@ -31,7 +36,6 @@
   const BOARD_SLUG = boardMatch[1];
   const SITE = SITE_ALIASES[BOARD_SLUG] || BOARD_SLUG;
   const LOG_PREFIX = "[arcalive-bridge]";
-  const RELOAD_INTERVAL_MS = 60 * 1000; // 1분 - 폴링 크롤러들의 기본 interval_seconds와 맞춤
 
   function parseRow(row) {
     // 게시판 종류마다 행 구조 자체가 다르다(실측 확인):
@@ -152,12 +156,13 @@
   }
 
   function main() {
+    // 다음 새로고침은 background.js의 alarms API가 예약한다(탭 가시성과 무관하게
+    // 정확히 발화) - 매번 새로 로드될 때마다 다시 등록해서 background.js가 "이 탭이
+    // 아직 감시 중"임을 알게 한다.
+    browser.runtime.sendMessage({ type: "register", site: SITE });
     browser.runtime.sendMessage({ type: "heartbeat", site: SITE });
     scanAndSend();
-    // 콘텐츠 스크립트는 새로고침마다 처음부터 다시 실행되므로, 다음 사이클의 타이머는
-    // 그 새 실행에서 또 새로 건다 - 별도의 반복 setInterval이 필요 없다.
-    setTimeout(() => location.reload(), RELOAD_INTERVAL_MS);
-    console.log(`${LOG_PREFIX} watching arca.live board '${SITE}' (reloading every ${RELOAD_INTERVAL_MS / 1000}s)`);
+    console.log(`${LOG_PREFIX} watching arca.live board '${SITE}'`);
   }
 
   main();

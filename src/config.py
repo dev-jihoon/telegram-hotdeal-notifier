@@ -11,6 +11,13 @@ class TelegramConfig:
     bot_token: str
     default_chat_id: int
     admin_chat_id: int
+    # admin_chat_id는 하위 호환을 위해 그대로 필수 필드로 남겨두고, 추가 관리자만
+    # 여기 더한다 - 기존 config.yaml은 이 필드 없이도 그대로 동작한다.
+    additional_admin_chat_ids: list[int] = field(default_factory=list)
+
+    @property
+    def all_admin_chat_ids(self) -> list[int]:
+        return [self.admin_chat_id, *self.additional_admin_chat_ids]
 
 
 @dataclass

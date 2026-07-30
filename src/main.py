@@ -78,15 +78,15 @@ async def run_site_loop(
             await sync_site(db, notifier, crawler, chat_id, config.crawl)
             await db.record_crawl_success(site_key, now)
             if failures.record_success(site_key):
-                await notifier.send_alert(
-                    config.telegram.admin_chat_id, f"✅ [{site_label}] 크롤링 복구됨"
+                await notifier.send_alert_to_admins(
+                    config.telegram.all_admin_chat_ids, f"✅ [{site_label}] 크롤링 복구됨"
                 )
         except Exception as e:
             logger.exception("[%s] crawl cycle failed", site_key)
             await db.record_crawl_failure(site_key, now, f"{type(e).__name__}: {e}")
             if failures.record_failure(site_key):
-                await notifier.send_alert(
-                    config.telegram.admin_chat_id,
+                await notifier.send_alert_to_admins(
+                    config.telegram.all_admin_chat_ids,
                     f"⚠️ [{site_label}] 크롤링이 연속으로 실패하고 있습니다.",
                 )
         await asyncio.sleep(interval)
@@ -124,8 +124,8 @@ async def run_webhook_health_loop(db: Database, notifier: TelegramNotifier, conf
                 if age >= threshold:
                     if site not in alerted:
                         alerted.add(site)
-                        await notifier.send_alert(
-                            config.telegram.admin_chat_id,
+                        await notifier.send_alert_to_admins(
+                            config.telegram.all_admin_chat_ids,
                             f"⚠️ [{SITE_LABELS.get(site, site)}] {config.webhook.heartbeat_stale_minutes}분"
                             f" 넘게 아무 신호(웹훅/크롤)가 없습니다 - 웹탑 세션이 죽었을 수 있습니다.",
                         )
@@ -207,7 +207,7 @@ async def async_main(config_path: str) -> None:
 
     admin_bot = AdminBot(
         config.telegram.bot_token,
-        config.telegram.admin_chat_id,
+        config.telegram.all_admin_chat_ids,
         db,
         # 폴링 크롤러가 없는 웹훅 전용 사이트도 /sites, /status에 나와야 하므로
         # crawlers 목록이 아니라 config.sites 전체를 기준으로 한다.

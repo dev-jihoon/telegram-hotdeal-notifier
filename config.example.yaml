@@ -2,6 +2,9 @@ telegram:
   bot_token: "REPLACE_ME"       # @BotFather 에서 발급받은 봇 토큰
   default_chat_id: -1000000000000   # 핫딜을 올릴 기본 채널/그룹 chat_id
   admin_chat_id: -1000000000000     # 크롤러 실패 알림을 받을 chat_id (기본 채널과 같아도 무방)
+  # additional_admin_chat_ids: [8213501003]  # 관리자를 더 추가하고 싶을 때 (선택). 여기 적힌
+  # 계정들도 /sites, /status, /settings, /admins를 똑같이 쓸 수 있고 알림도 같이 받습니다.
+  # 각 계정이 먼저 봇과 1:1 대화를 시작(/start)해둬야 합니다.
 
 database:
   path: "data/hotdeals.db"

@@ -44,3 +44,19 @@ def extract_mall(title: str) -> str | None:
     if not mall or mall in _MALL_DENYLIST:
         return None
     return mall
+
+
+def strip_leading_mall_tag(title: str, mall: str | None) -> str:
+    """제목 맨 앞의 '[쇼핑몰]' 태그가 이미 구조화된 mall 값과 같으면 제목에서 지운다.
+
+    아카라이브 등 구조화된 mall 필드가 있는 사이트는 메시지에 [쇼핑몰] 뱃지를 이미
+    따로 붙이는데, 원 게시글 제목에도 작성자가 관례로 같은 태그를 넣어둔 경우가 많아
+    그대로 쓰면 "[옥션][생활용품] [옥션] 제목"처럼 두 번 보인다. mall과 정확히 일치할
+    때만 지워서, 우연히 다른 의미의 대괄호로 시작하는 제목을 잘못 건드리지 않는다.
+    """
+    if not mall:
+        return title
+    match = _MALL_RE.match(title)
+    if not match or match.group(1).strip() != mall.strip():
+        return title
+    return title[match.end():].lstrip()

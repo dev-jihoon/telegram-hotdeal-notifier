@@ -33,6 +33,9 @@ cp docker-compose.example.yml docker-compose.yml
 - `telegram.admin_chat_id`: 크롤러 실패 알림과 `/sites` 사이트 on/off 메뉴를 받을 chat_id.
   개인 텔레그램 계정의 user id를 넣고, 반드시 그 계정으로 봇과 먼저 1:1 대화를 시작(`/start`)해
   두세요. 봇은 먼저 DM을 보낼 수 없습니다.
+- `telegram.additional_admin_chat_ids`: 관리자를 더 추가하고 싶을 때 (선택, 리스트). 여기
+  적힌 계정들도 admin_chat_id와 동일하게 모든 관리자 명령을 쓸 수 있고 알림도 같이 받습니다.
+  마찬가지로 각 계정이 먼저 봇과 1:1 대화를 시작해둬야 합니다.
 
 그 다음 실행합니다.
 

@@ -9,7 +9,7 @@
       "strict_min_version": "78.0"
     }
   },
-  "permissions": ["<all_urls>", "storage"],
+  "permissions": ["<all_urls>", "storage", "alarms", "tabs"],
   "background": {
     "scripts": ["config.js", "background.js"],
     "persistent": true
