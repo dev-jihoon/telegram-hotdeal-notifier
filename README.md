@@ -171,13 +171,14 @@ server {
 헤더를 봇 토큰으로 HMAC 검증해서 확인하고, 검증에 실패하면 403을 반환합니다 — 아무나 이 API를
 긁어가지 못하도록 하는 최소한의 보호 장치입니다.
 
-## 브라우저 확장으로 Cloudflare 우회 (아카라이브/zod)
+## 브라우저 확장으로 Cloudflare 우회 (아카라이브/에펨코리아, zod는 IP 차단이라 제외)
 
-아카라이브와 zod는 Cloudflare 봇 차단이 매우 강해서 `curl_cffi` TLS 위장, 헤드리스/헤드풀
-Playwright(Chromium/Firefox), 실제 브라우저 쿠키 주입까지 시도했지만 서버에서 실행하는 모든
-자동화 방식이 동일하게 차단됩니다. 대신 **이미 Cloudflare 챌린지를 통과한 상태로 계속 켜둘 수
-있는 브라우저 세션**(예: webtop 컨테이너의 Firefox)에 `extension/` 폴더의 확장 프로그램을 설치해
-목록 페이지(아카라이브는 `/b/<게시판>` 아무 게시판이나, zod는 `/deal`)를 열어두면, 확장이 폴링
+아카라이브와 에펨코리아는 Cloudflare(또는 자체 Turnstile 기반) 봇 차단이 매우 강해서
+`curl_cffi` TLS 위장, 헤드리스/헤드풀 Playwright(Chromium/Firefox), 실제 브라우저 쿠키
+주입까지 시도했지만 서버에서 실행하는 모든 자동화 방식이 동일하게 차단됩니다. 대신
+**이미 Cloudflare 챌린지를 통과한 상태로 계속 켜둘 수 있는 브라우저 세션**(예: webtop
+컨테이너의 Firefox)에 `extension/` 폴더의 확장 프로그램을 설치해 목록 페이지(아카라이브는
+`/b/<게시판>` 아무 게시판이나, 에펨코리아는 `/hotdeal`)를 열어두면, 확장이 폴링
 크롤러와 똑같은 주기(기본 1분)로 같은 URL을 다시 `fetch()`해(이미 통과한 세션의 쿠키가 그대로
 실려 나갑니다) 목록 전체를 파싱해 서버로 보냅니다. 처음엔 아카라이브가 웹소켓으로 목록을
 실시간 갱신할 거라 보고 MutationObserver로 새 글만 감지하려 했지만, 실제로는 새로고침 없이는
@@ -195,22 +196,26 @@ Playwright(Chromium/Firefox), 실제 브라우저 쿠키 주입까지 시도했�
 이건 브라우저로 접속해도 소용없습니다 - webtop도 같은 서버의 같은 공인 IP를 쓰기 때문입니다
 (`curl -m 10 https://사이트`로 직접 확인해보면 됩니다: 실제 HTTP 응답이 오면(403이라도)
 Cloudflare 챌린지라 이 방식이 통하고, 연결 자체가 타임아웃되면 IP 차단이라 이 방식으로는
-못 뚫습니다 - 서버 IP를 바꾸거나 해당 사이트만 별도 프록시를 태우는 수밖에 없습니다). 루리웹이
-실제로 이 후자 사례였습니다.
+못 뚫습니다 - 서버 IP를 바꾸거나 해당 사이트만 별도 프록시를 태우는 수밖에 없습니다). 루리웹과
+zod가 실제로 이 후자 사례였습니다(zod는 처음엔 HTTP 403이 와서 이 방식으로 시도했지만,
+이후 완전한 IP 차단으로 바뀌어 결국 포기하고 `sites.zod.enabled: false`로 꺼뒀습니다 -
+`extension/zod_site.js`는 나중에 IP가 바뀌는 등 상황이 풀리면 다시 쓸 수 있게 남겨뒀습니다).
 
 **새 사이트 추가하기**: `extension/common.js`가 등록/하트비트/전송/챌린지 신호 등 공통
 로직을 담당하므로, 사이트를 추가할 땐 그 사이트 DOM에 맞는 `parseListing(doc)`만 작성한
-새 파일(`extension/<사이트>_site.js`, `zod_site.js` 참고)을 만들고 `manifest.json`의
+새 파일(`extension/<사이트>_site.js`, `fmkorea_site.js` 참고)을 만들고 `manifest.json`의
 `content_scripts`에 `["common.js", "<사이트>_site.js"]`로 추가하면 됩니다. 서버의 기존
 폴링 크롤러(`src/crawlers/<site>.py`)가 있다면 그 BeautifulSoup 셀렉터를 그대로
-포팅하는 게 가장 정확합니다(실제로 zod는 이렇게 만들었습니다).
+포팅하는 게 가장 정확합니다(실제로 zod/에펨코리아 둘 다 이렇게 만들었습니다). **다만
+새 사이트를 추가하기 전에 반드시 위 IP 차단 여부부터 `curl -m 10`으로 확인하세요** -
+아니면 안 통할 걸 알면서 헛수고할 수 있습니다.
 
 **서버 설정**
 
 1. `config.yaml`에서 `webhook.enabled: true`, `webhook.secret`에 긴 무작위 문자열을 채우고,
-   `webhook.sites`에 확장이 담당할 사이트 키를 적습니다(예: `["arcalive", "zod"]`) — 이
+   `webhook.sites`에 확장이 담당할 사이트 키를 적습니다(예: `["arcalive", "fmkorea"]`) — 이
    목록에 있어야 하트비트 끊김 감지 대상이 됩니다.
-2. 해당 사이트들(`sites.arcalive`, `sites.zod`)은 **`enabled: true`로 켜둔 채** 유지하세요
+2. 해당 사이트들(`sites.arcalive`, `sites.fmkorea`)은 **`enabled: true`로 켜둔 채** 유지하세요
    — `enabled`는 폴링 루프뿐 아니라 웹훅 수신 여부도 같이 결정하는 값이라
    (`db.get_site_enabled`), `false`로 끄면 폴링 크롤러뿐 아니라 웹훅으로 들어오는
    데이터도 전부 무시됩니다. 대신 폴링 크롤러가 등록돼 있는 사이트(둘 다 이미 크롤러
@@ -229,17 +234,17 @@ Cloudflare 챌린지라 이 방식이 통하고, 연결 자체가 타임아웃�
    (재부팅/컨테이너 재시작마다 다시 로드해야 합니다 — 영구 설치하려면 Firefox 엔터프라이즈
    정책(`policies.json`)의 `ExtensionSettings`로 서명되지 않은 확장을 허용하도록 설정해야
    합니다.)
-3. 감시하고 싶은 사이트마다 그 도메인의 Cloudflare 챌린지를 그 세션에서 먼저 수동으로
-   통과시켜야 합니다(쿠키는 도메인별로 따로 발급되므로, 아카라이브를 통과했다고 zod까지
-   자동으로 통과되지 않습니다) - `https://arca.live/b/<게시판>`(기존 핫딜이면 `/b/hotdeal`)과
-   `https://zod.kr/deal`을 각각 열어 챌린지를 통과시킨 뒤, 탭을 계속 켜둡니다. 게시판/사이트마다
-   서버 `config.yaml`의 `sites:`에 같은 키(아카라이브는 URL의 게시판 슬러그, 핫딜만 예외로
-   `arcalive`; zod는 `zod`)로 항목이 있어야 합니다 - 폴링 크롤러가 없는 사이트라도 등록만
-   해두면 웹훅 전용으로 동작합니다.
+3. 감시하고 싶은 사이트마다 그 도메인의 챌린지를 그 세션에서 먼저 수동으로 통과시켜야
+   합니다(쿠키는 도메인별로 따로 발급되므로, 아카라이브를 통과했다고 에펨코리아까지 자동으로
+   통과되지 않습니다) - `https://arca.live/b/<게시판>`(기존 핫딜이면 `/b/hotdeal`)과
+   `https://www.fmkorea.com/hotdeal`을 각각 열어 챌린지를 통과시킨 뒤, 탭을 계속 켜둡니다.
+   게시판/사이트마다 서버 `config.yaml`의 `sites:`에 같은 키(아카라이브는 URL의 게시판
+   슬러그, 핫딜만 예외로 `arcalive`; 에펨코리아는 `fmkorea`)로 항목이 있어야 합니다 -
+   폴링 크롤러가 없는 사이트라도 등록만 해두면 웹훅 전용으로 동작합니다.
 
 **동작 확인**
 
-- 브라우저 콘솔(F12)에 `[arcalive-bridge] ...` / `[zod-bridge] ...` 로그가 찍히면 해당
+- 브라우저 콘솔(F12)에 `[arcalive-bridge] ...` / `[fmkorea-bridge] ...` 로그가 찍히면 해당
   탭의 확장이 정상 동작 중입니다.
   `listing empty/unparseable` 경고가 반복되면 `cf_clearance` 쿠키가 만료된 것일 수 있으니
   그 세션에서 페이지를 한 번 새로고침해 챌린지를 다시 통과시켜야 합니다.
