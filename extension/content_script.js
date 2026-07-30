@@ -2,9 +2,12 @@
 //
 // 처음엔 웹소켓으로 목록이 실시간 갱신될 거라 가정하고 MutationObserver로 새 글만
 // 감지하는 방식으로 만들었는데, 실측해보니 목록 자체는 새로고침 없이 갱신되지 않았다.
-// 그래서 지금은 폴링 크롤러와 동일한 모델로 바꿨다: 탭은 그대로 열어두되, 주기적으로
-// 같은 URL을 fetch()로 다시 받아(이미 Cloudflare를 통과한 세션의 쿠키가 그대로 실려서
-// 나간다) 목록 전체를 다시 파싱해 서버로 보낸다. 신규/수정/삭제 판정은 서버가
+// 그다음엔 탭은 그대로 두고 fetch()로 같은 URL을 주기적으로 다시 받아오는 방식으로
+// 바꿨는데, 이것도 실측해보니 Cloudflare가 콘텐츠 스크립트의 fetch() 요청만 따로
+// 403으로 막았다(같은 브라우저/쿠키인데도 일반 페이지 이동과는 다르게 취급됨). 그래서
+// 지금은 아예 location.reload()로 진짜 페이지 이동을 매번 일으킨다 - 이러면 매 새로고침마다
+// 콘텐츠 스크립트가 처음부터 다시 실행되므로, 그 시점에 라이브 문서를 한 번 스캔해 보내고
+// 다음 새로고침을 예약하는 식으로 폴링 루프를 흉내낸다. 신규/수정/삭제 판정은 서버가
 // (다른 사이트의 폴링 크롤러와 완전히 동일한 로직으로) 처리한다 - 그래서 이미지도 여기서
 // 미리 안 받아온다: 어차피 서버가 신규로 확정한 글만 실제로 이미지가 필요한데, 그건 이
 // 시점엔 알 수 없고, 서버의 기존 폴백(원본 썸네일 URL 직접 요청 → 실패 시 URL만 텔레그램에
@@ -27,10 +30,8 @@
   const SITE_ALIASES = { hotdeal: "arcalive" };
   const BOARD_SLUG = boardMatch[1];
   const SITE = SITE_ALIASES[BOARD_SLUG] || BOARD_SLUG;
-  const LIST_URL = `https://arca.live/b/${BOARD_SLUG}`;
   const LOG_PREFIX = "[arcalive-bridge]";
-  const POLL_INTERVAL_MS = 60 * 1000; // 1분 - 폴링 크롤러들의 기본 interval_seconds와 맞춤
-  const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5분
+  const RELOAD_INTERVAL_MS = 60 * 1000; // 1분 - 폴링 크롤러들의 기본 interval_seconds와 맞춤
 
   function parseRow(row) {
     // 게시판 종류마다 행 구조 자체가 다르다(실측 확인):
@@ -127,37 +128,19 @@
     return articles;
   }
 
-  async function fetchListingDoc() {
-    const res = await fetch(LIST_URL, { credentials: "include", cache: "no-store" });
-    const html = await res.text();
-    console.log(`${LOG_PREFIX} [${SITE}] debug: fetch status=${res.status} html.length=${html.length}`);
-    return new DOMParser().parseFromString(html, "text/html");
-  }
-
-  async function pollOnce(doc) {
-    let targetDoc;
-    try {
-      targetDoc = doc || (await fetchListingDoc());
-    } catch (e) {
-      console.error(`${LOG_PREFIX} [${SITE}] fetch failed:`, e);
-      return;
-    }
+  function scanAndSend() {
     let articles;
     try {
-      console.log(
-        `${LOG_PREFIX} [${SITE}] debug: raw .vrow=${targetDoc.querySelectorAll(".vrow").length}`,
-        `selector-match=${targetDoc.querySelectorAll(BOARD_ITEMS_SELECTOR).length}`
-      );
-      articles = parseListing(targetDoc);
+      articles = parseListing(document);
     } catch (e) {
       console.error(`${LOG_PREFIX} [${SITE}] parse failed:`, e);
       return;
     }
-    // 글 행을 하나도 못 찾으면 대부분 Cloudflare 챌린지 페이지를 받았거나(cf_clearance
-    // 쿠키 만료 등) 셀렉터가 안 맞는 것이다 - 진짜 빈 목록으로 보내면 서버가 기존 추적
-    // 글을 전부 "계속 안 보임"으로 오판할 수 있으므로 이번 사이클은 그냥 건너뛴다.
+    // 글 행을 하나도 못 찾으면 셀렉터가 안 맞거나(페이지 구조 변경) 페이지가 아직 다
+    // 렌더링되지 않은 것이다 - 진짜 빈 목록으로 보내면 서버가 기존 추적 글을 전부
+    // "계속 안 보임"으로 오판할 수 있으므로 이번 사이클은 그냥 건너뛴다.
     if (!articles || articles.length === 0) {
-      console.warn(`${LOG_PREFIX} [${SITE}] listing empty/unparseable - Cloudflare challenge? skipping this cycle`);
+      console.warn(`${LOG_PREFIX} [${SITE}] listing empty/unparseable, skipping this cycle`);
       return;
     }
     browser.runtime.sendMessage({ type: "batch", site: SITE, articles });
@@ -165,13 +148,12 @@
   }
 
   function main() {
-    // 첫 사이클은 이미 로드되어 있는 라이브 문서를 그대로 쓴다 (불필요한 재요청 방지).
-    pollOnce(document);
-    setInterval(() => pollOnce(), POLL_INTERVAL_MS);
-    setInterval(() => {
-      browser.runtime.sendMessage({ type: "heartbeat", site: SITE });
-    }, HEARTBEAT_INTERVAL_MS);
-    console.log(`${LOG_PREFIX} watching arca.live board '${SITE}' (polling every ${POLL_INTERVAL_MS / 1000}s)`);
+    browser.runtime.sendMessage({ type: "heartbeat", site: SITE });
+    scanAndSend();
+    // 콘텐츠 스크립트는 새로고침마다 처음부터 다시 실행되므로, 다음 사이클의 타이머는
+    // 그 새 실행에서 또 새로 건다 - 별도의 반복 setInterval이 필요 없다.
+    setTimeout(() => location.reload(), RELOAD_INTERVAL_MS);
+    console.log(`${LOG_PREFIX} watching arca.live board '${SITE}' (reloading every ${RELOAD_INTERVAL_MS / 1000}s)`);
   }
 
   main();
