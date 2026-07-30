@@ -72,7 +72,15 @@ function scheduleNextReload() {
 browser.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== RELOAD_ALARM_NAME) return;
   for (const tabId of watchedTabs.keys()) {
-    browser.tabs.reload(tabId).catch(() => watchedTabs.delete(tabId));
+    // tabs.reload()는 그 탭의 마지막 내비게이션이 POST였으면(에펨코리아 등 일부 사이트가
+    // 목록 페이지 자체를 POST로 띄우는 경우가 있다) "양식을 다시 제출하시겠습니까" 확인
+    // 창을 띄우고, 자동화된 탭에서는 아무도 눌러줄 사람이 없어 그 사이클이 그냥 멈춘다.
+    // 대신 현재 URL로 새로 내비게이션(tabs.update)하면 평범한 GET 이동이라 이 확인
+    // 창이 뜨지 않는다.
+    browser.tabs
+      .get(tabId)
+      .then((tab) => browser.tabs.update(tabId, { url: tab.url }))
+      .catch(() => watchedTabs.delete(tabId));
   }
   scheduleNextReload();
 });
