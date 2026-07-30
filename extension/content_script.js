@@ -33,18 +33,26 @@
   const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5분
 
   function parseRow(row) {
-    // 썸네일 있는 "카드형" 게시판(아카라이브에서 hybrid 클래스가 붙음, 핫딜 게시판 등)은
-    // a.title.hybrid-title을, 썸네일 없는 일반 텍스트 게시판은 a.title만 씁니다.
-    const titleTag = row.querySelector("a.title.hybrid-title") || row.querySelector("a.title");
-    if (!titleTag || !titleTag.getAttribute("href")) return null;
-    const href = titleTag.getAttribute("href");
+    // 게시판 종류마다 행 구조 자체가 다르다(실측 확인):
+    // - 썸네일 있는 "카드형"(hybrid, 핫딜 등): <div class="vrow hybrid">가 행이고, 그 안에
+    //   <a class="title hybrid-title" href="...">가 따로 있다.
+    // - 썸네일 없는 일반 텍스트 게시판: <a class="vrow column" href="...">가 행 자체이고
+    //   (별도의 title 링크가 없다), 제목 텍스트는 그 안의 <span class="title">에 들어있다.
+    // 그래서 링크는 "행 자체가 a면 그걸, 아니면 안에서 찾기"로, 제목은 태그 종류와 무관하게
+    // class="title"인 요소를 찾아서 처리한다.
+    const linkTag = row.tagName === "A" && row.getAttribute("href")
+      ? row
+      : row.querySelector("a.title.hybrid-title") || row.querySelector("a[href]");
+    if (!linkTag) return null;
+    const href = linkTag.getAttribute("href");
     const match = href.match(/\/b\/([\w\d]+)\/(\d+)/);
     if (!match) return null;
     const boardId = match[1];
     const articleId = match[2];
 
-    // 직계 텍스트 노드만 모은다(뱃지 등 자식 요소 텍스트는 제외) - Python의
+    // 직계 텍스트 노드만 모은다(뱃지/아이콘 등 자식 요소 텍스트는 제외) - Python의
     // find_all(string=True, recursive=False)와 동일한 취지.
+    const titleTag = row.querySelector(".title") || linkTag;
     let title = "";
     for (const node of titleTag.childNodes) {
       if (node.nodeType === Node.TEXT_NODE) title += node.textContent;
