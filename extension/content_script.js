@@ -1,22 +1,6 @@
 // 아카라이브의 아무 게시판 목록(https://arca.live/b/<board>)이나 감시한다.
-//
-// 처음엔 웹소켓으로 목록이 실시간 갱신될 거라 가정하고 MutationObserver로 새 글만
-// 감지하는 방식으로 만들었는데, 실측해보니 목록 자체는 새로고침 없이 갱신되지 않았다.
-// 그다음엔 탭은 그대로 두고 fetch()로 같은 URL을 주기적으로 다시 받아오는 방식으로
-// 바꿨는데, 이것도 실측해보니 Cloudflare가 콘텐츠 스크립트의 fetch() 요청만 따로
-// 403으로 막았다(같은 브라우저/쿠키인데도 일반 페이지 이동과는 다르게 취급됨). 그래서
-// location.reload()로 진짜 페이지 이동을 매번 일으키는 방식으로 바꿨는데, 이번엔 탭이
-// (noVNC에 아무도 접속 안 해있는 등) 오래 백그라운드에 있으면 페이지 자체의
-// setTimeout이 브라우저에 의해 강하게 스로틀링돼서 새로고침이 밀리는 문제가 있었다
-// (웹탑에 들어가야 그제서야 밀린 게 한꺼번에 처리됨). 그래서 새로고침 스케줄링
-// 자체를 background.js의 alarms API로 옮겼다 - 이건 탭 가시성과 무관하게 계속
-// 정확히 발화한다. 이 파일은 로드될 때마다(최초 진입 + 매 새로고침마다) 자신을
-// background.js에 등록해서, background.js가 주기적으로 이 탭을 리로드해주게 한다.
-// 신규/수정/삭제 판정은 서버가 (다른 사이트의 폴링 크롤러와 완전히 동일한 로직으로)
-// 처리한다 - 그래서 이미지도 여기서 미리 안 받아온다: 어차피 서버가 신규로 확정한
-// 글만 실제로 이미지가 필요한데, 그건 이 시점엔 알 수 없고, 서버의 기존 폴백(원본
-// 썸네일 URL 직접 요청 → 실패 시 URL만 텔레그램에 넘겨 텔레그램 서버가 대신
-// 가져가게 함)이 이미 있어 대부분 그걸로 충분하다.
+// 공통 보일러플레이트(등록/하트비트/전송/챌린지 신호)는 common.js의 runBridge()가
+// 담당한다 - 이 파일은 아카라이브 DOM에 맞는 parseListing()만 정의한다.
 //
 // 셀렉터는 src/crawlers/arcalive.py의 _parse_listing()과 최대한 동일하게 유지한다 -
 // 서버 파서와 결과가 어긋나면 같은 글이 다르게 보여서 계속 "변경됨"으로 오인될 수 있다.
@@ -35,7 +19,6 @@
   const SITE_ALIASES = { hotdeal: "arcalive" };
   const BOARD_SLUG = boardMatch[1];
   const SITE = SITE_ALIASES[BOARD_SLUG] || BOARD_SLUG;
-  const LOG_PREFIX = "[arcalive-bridge]";
 
   function parseRow(row) {
     // 게시판 종류마다 행 구조 자체가 다르다(실측 확인):
@@ -132,38 +115,5 @@
     return articles;
   }
 
-  function scanAndSend() {
-    let articles;
-    try {
-      articles = parseListing(document);
-    } catch (e) {
-      console.error(`${LOG_PREFIX} [${SITE}] parse failed:`, e);
-      return;
-    }
-    // 글 행을 하나도 못 찾으면 대부분 Cloudflare 챌린지가 다시 뜬 것이다(cf_clearance
-    // 쿠키 만료 등 - 브라우저 세션에서 수동으로 다시 통과시켜야 풀린다). 진짜 빈 목록으로
-    // 보내면 서버가 기존 추적 글을 전부 "계속 안 보임"으로 오판할 수 있으므로 이번
-    // 사이클은 건너뛰되, 서버에는 별도 신호를 보내 관리자에게 즉시 알리게 한다 - 하트비트는
-    // 계속 정상으로 찍히므로(확장 자체는 살아있음) 30분 무신호 알림만으론 이 문제를
-    // 바로 못 잡는다.
-    if (!articles || articles.length === 0) {
-      console.warn(`${LOG_PREFIX} [${SITE}] listing empty/unparseable, skipping this cycle`);
-      browser.runtime.sendMessage({ type: "challenge", site: SITE });
-      return;
-    }
-    browser.runtime.sendMessage({ type: "batch", site: SITE, articles });
-    console.log(`${LOG_PREFIX} [${SITE}] sent listing: ${articles.length} articles`);
-  }
-
-  function main() {
-    // 다음 새로고침은 background.js의 alarms API가 예약한다(탭 가시성과 무관하게
-    // 정확히 발화) - 매번 새로 로드될 때마다 다시 등록해서 background.js가 "이 탭이
-    // 아직 감시 중"임을 알게 한다.
-    browser.runtime.sendMessage({ type: "register", site: SITE });
-    browser.runtime.sendMessage({ type: "heartbeat", site: SITE });
-    scanAndSend();
-    console.log(`${LOG_PREFIX} watching arca.live board '${SITE}'`);
-  }
-
-  main();
+  runBridge({ site: SITE, parseListing, logPrefix: "[arcalive-bridge]" });
 })();

@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "name": "Arca.live Bridge",
-  "version": "2.0.0",
-  "description": "아카라이브의 아무 게시판이나 목록 페이지를 열어두면 감시하다가 새 글을 봇 서버 웹훅으로 전달합니다. Cloudflare가 서버 크롤러는 막아도, 이미 통과한 이 브라우저 세션은 막지 않는다는 점을 이용합니다.",
+  "name": "Hotdeal Bridge",
+  "version": "3.0.0",
+  "description": "Cloudflare가 서버 크롤러는 막아도 이미 통과한 브라우저 세션은 막지 않는다는 점을 이용해, 아카라이브/zod의 목록 페이지를 열어두면 감시하다가 새 글을 봇 서버 웹훅으로 전달합니다.",
   "browser_specific_settings": {
     "gecko": {
       "id": "arcalive-bridge@dev-jihoon.local",
@@ -17,7 +17,12 @@
   "content_scripts": [
     {
       "matches": ["https://arca.live/b/*"],
-      "js": ["content_script.js"],
+      "js": ["common.js", "content_script.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://zod.kr/deal*"],
+      "js": ["common.js", "zod_site.js"],
       "run_at": "document_idle"
     }
   ]
