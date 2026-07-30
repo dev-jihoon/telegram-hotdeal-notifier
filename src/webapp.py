@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl
@@ -111,6 +113,13 @@ def create_app(
     # 리셋한다. 프로세스 재시작 시 초기화되는 것도 의도된 동작(다시 알림 대상이 됨).
     challenge_alerted: set[str] = set()
 
+    # 같은 사이트에 대한 웹훅 배치 요청이 겹치면(웹탑에 같은 사이트 탭이 실수로 두 개
+    # 떠 있거나, 응답이 느려져 다음 새로고침 사이클과 겹치는 경우) 둘 다 같은 DB 상태를
+    # 읽고 같은 글을 "새 글"로 판단해 중복 전송할 수 있다 - 사이트별로 처리를 직렬화해서
+    # 막는다. defaultdict(asyncio.Lock)는 매번 없으면 새로 만들어주므로 사이트 키를
+    # 미리 알 필요가 없다.
+    site_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
     async def index(request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
 
@@ -166,7 +175,10 @@ def create_app(
 
         chat_id = config.sites[site].chat_id if site in config.sites and config.sites[site].chat_id else config.telegram.default_chat_id
         try:
-            await sync_webhook_listing(db, notifier, site, chat_id, config.crawl, articles)
+            # 같은 사이트의 겹치는 요청이 같은 "새 글"을 동시에 처리해 중복 전송하지
+            # 않도록, 사이트별로 순서대로 처리한다.
+            async with site_locks[site]:
+                await sync_webhook_listing(db, notifier, site, chat_id, config.crawl, articles)
         except Exception:
             logger.exception("[%s] failed to sync webhook listing", site)
             return web.json_response({"error": "sync failed"}, status=500)
