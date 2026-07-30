@@ -130,15 +130,27 @@
   async function fetchListingDoc() {
     const res = await fetch(LIST_URL, { credentials: "include", cache: "no-store" });
     const html = await res.text();
+    console.log(`${LOG_PREFIX} [${SITE}] debug: fetch status=${res.status} html.length=${html.length}`);
     return new DOMParser().parseFromString(html, "text/html");
   }
 
   async function pollOnce(doc) {
+    let targetDoc;
+    try {
+      targetDoc = doc || (await fetchListingDoc());
+    } catch (e) {
+      console.error(`${LOG_PREFIX} [${SITE}] fetch failed:`, e);
+      return;
+    }
     let articles;
     try {
-      articles = parseListing(doc || (await fetchListingDoc()));
+      console.log(
+        `${LOG_PREFIX} [${SITE}] debug: raw .vrow=${targetDoc.querySelectorAll(".vrow").length}`,
+        `selector-match=${targetDoc.querySelectorAll(BOARD_ITEMS_SELECTOR).length}`
+      );
+      articles = parseListing(targetDoc);
     } catch (e) {
-      console.error(`${LOG_PREFIX} [${SITE}] fetch/parse failed:`, e);
+      console.error(`${LOG_PREFIX} [${SITE}] parse failed:`, e);
       return;
     }
     // 글 행을 하나도 못 찾으면 대부분 Cloudflare 챌린지 페이지를 받았거나(cf_clearance
