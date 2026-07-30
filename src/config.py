@@ -83,6 +83,10 @@ class WebhookConfig:
     secret: str | None = None
     # 하트비트가 이 시간(분) 이상 안 오면 관리자에게 "웹훅 소스가 죽은 것 같다" 알림을 보낸다.
     heartbeat_stale_minutes: int = 30
+    # 브라우저 확장이 실제로 담당하는 사이트 키 목록. run_webhook_health_loop가 이 목록에
+    # 있는 사이트만 last_success_at 신선도를 체크한다 - 여기 없으면 그냥 폴링 전용
+    # 사이트라, 꺼져 있거나 오래 실패 중이어도 "웹훅이 끊겼다"는 알림을 보내지 않는다.
+    sites: list[str] = field(default_factory=list)
 
 
 @dataclass

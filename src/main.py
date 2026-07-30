@@ -102,20 +102,23 @@ async def run_retention_loop(db: Database, config: Config) -> None:
 
 
 async def run_webhook_health_loop(db: Database, notifier: TelegramNotifier, config: Config) -> None:
-    """브라우저 확장(웹훅)이 보내는 하트비트가 끊기면 관리자에게 알린다.
+    """브라우저 확장(웹훅)이 보내는 신호가 끊기면 관리자에게 알린다.
 
-    폴링 크롤러가 같은 사이트에서 아직 같이 돌고 있으면 last_success_at을 폴링 쪽도 갱신해서
-    당분간 이 체크가 무의미해질 수 있다 - 웹훅으로 완전히 넘어간 뒤(/sites에서 폴링을 끈
-    뒤)부터 의미가 생긴다. 사이트당 한 번만 알리고, 복구되면 다시 알릴 수 있도록 리셋한다.
+    config.webhook.sites에 명시된 사이트만 체크한다 - 그 외 사이트는 폴링 전용이라
+    last_success_at이 오래됐다는 게 "웹훅이 끊겼다"는 뜻이 아니다(예: /sites로 이미 꺼둔
+    사이트나, Cloudflare 차단으로 계속 실패 중인 폴링 사이트도 last_success_at이 그대로
+    멈춰있다 - 이런 사이트를 여기서도 체크하면 이미 알고 있는 상태를 엉뚱한 문구로 다시
+    알리는 오탐이 된다. 폴링 실패는 run_site_loop의 FailureTracker가 이미 따로 알린다).
+    사이트당 한 번만 알리고, 복구되면 다시 알릴 수 있도록 리셋한다.
     """
-    if not config.webhook.enabled:
+    if not config.webhook.enabled or not config.webhook.sites:
         return
     threshold = timedelta(minutes=config.webhook.heartbeat_stale_minutes)
     alerted: set[str] = set()
     while True:
         await asyncio.sleep(300)
         try:
-            report = await db.get_site_report(list(config.sites))
+            report = await db.get_site_report(config.webhook.sites)
             for site, info in report.items():
                 last = info.get("last_success_at")
                 if last is None:

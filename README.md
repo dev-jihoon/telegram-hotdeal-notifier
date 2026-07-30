@@ -192,11 +192,15 @@ Playwright(Chromium/Firefox), 실제 브라우저 쿠키 주입까지 시도했�
 
 **서버 설정**
 
-1. `config.yaml`에서 `webhook.enabled: true`, `webhook.secret`에 긴 무작위 문자열을 채웁니다.
-2. `sites.arcalive.interval_seconds`짜리 폴링 크롤러는 계속 403만 받으므로,
-   `sites.arcalive.enabled: false`로 꺼서 불필요한 요청/실패 알림을 막는 걸 권장합니다
-   (웹훅 데이터는 `enabled` 값과 무관하게 계속 처리됩니다 — 이 값은 폴링 루프에만 영향을
-   줍니다).
+1. `config.yaml`에서 `webhook.enabled: true`, `webhook.secret`에 긴 무작위 문자열을 채우고,
+   `webhook.sites`에 확장이 담당할 사이트 키를 적습니다(예: `["arcalive"]`) — 이 목록에
+   있어야 하트비트 끊김 감지 대상이 됩니다.
+2. `sites.arcalive`는 **`enabled: true`로 켜둔 채** 유지하세요 — `enabled`는 폴링 루프뿐
+   아니라 웹훅 수신 여부도 같이 결정하는 값이라(`db.get_site_enabled`), `false`로 끄면
+   폴링 크롤러뿐 아니라 웹훅으로 들어오는 데이터도 전부 무시됩니다. 대신 폴링 크롤러가
+   등록돼 있는 사이트(아카라이브처럼 이미 크롤러 코드가 있는 경우)는 Cloudflare에 계속
+   막혀 매 사이클 실패하지만, 그 자체는 무해합니다(기존 `failure_alert_threshold` 알림만
+   따로 옵니다) — 신경 쓰이면 `interval_seconds`를 크게(예: 3600) 잡아 요청 빈도만 줄이세요.
 
 **확장 설정 및 설치**
 
@@ -293,6 +297,7 @@ Playwright(Chromium/Firefox), 실제 브라우저 쿠키 주입까지 시도했�
 | `webhook.enabled` | 브라우저 확장 웹훅 수신 여부 | false |
 | `webhook.secret` | 확장의 `WEBHOOK_SECRET`과 일치해야 하는 인증 시크릿 | (없음) |
 | `webhook.heartbeat_stale_minutes` | 이만큼(분) 확장 신호가 끊기면 관리자에게 경고 | 30 |
+| `webhook.sites` | 하트비트 끊김 감지 대상 사이트 키 목록 (여기 없으면 신호가 끊겨도 경고 안 함) | `[]` |
 | `display.show_site_name` | 메시지에 `[뽐뿌]` 같은 사이트명 접두사 표시 여부 | true |
 | `display.webapp_button_label` / `webapp_title` / `webapp_empty_message` | 미니앱 관련 버튼/제목/빈 목록 문구 | 코드 참고 |
 | `display.digest_header` / `digest_mall_ranking_label` | 다이제스트 헤더/쇼핑몰 랭킹 라벨 문구 | 코드 참고 |
