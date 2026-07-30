@@ -61,10 +61,10 @@ def format_message(article: Article, show_site_name: bool = True) -> str:
     if show_site_name:
         site_label = SITE_LABELS.get(article.site, article.site)
         prefix = f"[{site_label}]"
-    if article.mall and article.mall != article.category:
-        prefix += f"[{html.escape(article.mall, quote=False)}]"
     if article.category:
         prefix += f"[{html.escape(article.category, quote=False)}]"
+    if article.mall and article.mall != article.category:
+        prefix += f"[{html.escape(article.mall, quote=False)}]"
     title = html.escape(strip_leading_mall_tag(article.title, article.mall), quote=False)
     lines = [f"<b>{prefix} {title}</b>" if prefix else f"<b>{title}</b>"]
 

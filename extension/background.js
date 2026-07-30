@@ -56,10 +56,25 @@ browser.tabs.onRemoved.addListener((tabId) => watchedTabs.delete(tabId));
 // 안 돌 때가 있었다(웹탑에 실제로 들어가야 그제서야 밀린 게 한꺼번에 처리됨). 확장의
 // alarms API는 탭 가시성과 무관하게 계속 정확히 발화하므로, 새로고침 자체를 여기
 // 백그라운드에서 예약한다.
-browser.alarms.create(RELOAD_ALARM_NAME, { periodInMinutes: 1 });
+//
+// 매번 정확히 60초 간격이면 요청 패턴이 너무 규칙적으로 보일 수 있어, 1분 안팎으로
+// 살짝 흔든다 - 너무 짧아지면(밑변 미만) 요청이 잦아지고, 너무 길어지면(윗변 초과)
+// 새 글 감지가 늦어지므로 좁은 범위(50~70초)에서만 무작위로 고른다. periodInMinutes로는
+// 매번 다른 간격을 줄 수 없어서, 발화할 때마다 다음 발화를 새로 무작위 예약하는 방식을 쓴다.
+const RELOAD_MIN_MS = 50 * 1000;
+const RELOAD_MAX_MS = 70 * 1000;
+
+function scheduleNextReload() {
+  const delayMs = RELOAD_MIN_MS + Math.random() * (RELOAD_MAX_MS - RELOAD_MIN_MS);
+  browser.alarms.create(RELOAD_ALARM_NAME, { when: Date.now() + delayMs });
+}
+
 browser.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== RELOAD_ALARM_NAME) return;
   for (const tabId of watchedTabs.keys()) {
     browser.tabs.reload(tabId).catch(() => watchedTabs.delete(tabId));
   }
+  scheduleNextReload();
 });
+
+scheduleNextReload();
