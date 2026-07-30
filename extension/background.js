@@ -33,4 +33,7 @@ browser.runtime.onMessage.addListener((msg) => {
   if (msg.type === "heartbeat") {
     return postWebhook(msg.site, "heartbeat", {});
   }
+  if (msg.type === "challenge") {
+    return postWebhook(msg.site, "challenge", {});
+  }
 });

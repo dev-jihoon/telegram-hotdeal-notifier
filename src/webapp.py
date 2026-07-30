@@ -104,6 +104,13 @@ def create_app(
 ) -> web.Application:
     app = web.Application(client_max_size=4 * 1024 * 1024)
 
+    # 브라우저 확장이 목록에서 글을 하나도 못 찾으면(대부분 Cloudflare 챌린지 재발생)
+    # 즉시 관리자에게 알려야 한다 - 하트비트는 확장이 살아있는 한 계속 정상으로 찍혀서
+    # 30분 무신호 알림(run_webhook_health_loop)만으로는 이 상황을 바로 못 잡는다.
+    # 사이트당 한 번만 알리고, 다음 정상 목록이 들어오면(웹훅 batch 성공) 복구로 간주해
+    # 리셋한다. 프로세스 재시작 시 초기화되는 것도 의도된 동작(다시 알림 대상이 됨).
+    challenge_alerted: set[str] = set()
+
     async def index(request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
 
@@ -164,6 +171,12 @@ def create_app(
             logger.exception("[%s] failed to sync webhook listing", site)
             return web.json_response({"error": "sync failed"}, status=500)
         await _touch_site_alive(site)
+        if site in challenge_alerted:
+            challenge_alerted.discard(site)
+            await notifier.send_alert(
+                config.telegram.admin_chat_id,
+                f"✅ [{SITE_LABELS.get(site, site)}] 목록이 다시 정상적으로 수신되고 있습니다.",
+            )
         return web.json_response({"status": "ok"})
 
     async def webhook_heartbeat(request: web.Request) -> web.Response:
@@ -174,10 +187,31 @@ def create_app(
         await _touch_site_alive(site)
         return web.json_response({"status": "ok"})
 
+    async def webhook_challenge(request: web.Request) -> web.Response:
+        """확장이 목록을 하나도 못 읽었을 때(대부분 Cloudflare 챌린지) 보내는 신호.
+
+        하트비트와 달리 즉시(사이트당 최초 1회) 관리자에게 알린다 - 브라우저 세션에서
+        수동으로 챌린지를 다시 통과시켜야 풀리는 문제라 빨리 알아야 대응할 수 있다.
+        """
+        auth_error = _check_webhook_auth(request)
+        if auth_error:
+            return auth_error
+        site = request.match_info["site"]
+        if site not in challenge_alerted:
+            challenge_alerted.add(site)
+            await notifier.send_alert(
+                config.telegram.admin_chat_id,
+                f"🚧 [{SITE_LABELS.get(site, site)}] 브라우저 확장이 목록을 못 읽고 있습니다 - "
+                f"Cloudflare 챌린지가 다시 떴을 가능성이 높습니다. webtop 세션에서 수동으로 "
+                f"통과시켜주세요.",
+            )
+        return web.json_response({"status": "ok"})
+
     app.router.add_get("/", index)
     app.router.add_get("/api/deals", api_deals)
     app.router.add_post("/webhook/{site}/batch", webhook_batch)
     app.router.add_post("/webhook/{site}/heartbeat", webhook_heartbeat)
+    app.router.add_post("/webhook/{site}/challenge", webhook_challenge)
     app.router.add_static("/static/", STATIC_DIR)
     return app
 

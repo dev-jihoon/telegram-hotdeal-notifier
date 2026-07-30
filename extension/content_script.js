@@ -136,11 +136,15 @@
       console.error(`${LOG_PREFIX} [${SITE}] parse failed:`, e);
       return;
     }
-    // 글 행을 하나도 못 찾으면 셀렉터가 안 맞거나(페이지 구조 변경) 페이지가 아직 다
-    // 렌더링되지 않은 것이다 - 진짜 빈 목록으로 보내면 서버가 기존 추적 글을 전부
-    // "계속 안 보임"으로 오판할 수 있으므로 이번 사이클은 그냥 건너뛴다.
+    // 글 행을 하나도 못 찾으면 대부분 Cloudflare 챌린지가 다시 뜬 것이다(cf_clearance
+    // 쿠키 만료 등 - 브라우저 세션에서 수동으로 다시 통과시켜야 풀린다). 진짜 빈 목록으로
+    // 보내면 서버가 기존 추적 글을 전부 "계속 안 보임"으로 오판할 수 있으므로 이번
+    // 사이클은 건너뛰되, 서버에는 별도 신호를 보내 관리자에게 즉시 알리게 한다 - 하트비트는
+    // 계속 정상으로 찍히므로(확장 자체는 살아있음) 30분 무신호 알림만으론 이 문제를
+    // 바로 못 잡는다.
     if (!articles || articles.length === 0) {
       console.warn(`${LOG_PREFIX} [${SITE}] listing empty/unparseable, skipping this cycle`);
+      browser.runtime.sendMessage({ type: "challenge", site: SITE });
       return;
     }
     browser.runtime.sendMessage({ type: "batch", site: SITE, articles });
