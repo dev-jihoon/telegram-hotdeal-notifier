@@ -103,11 +103,16 @@
     };
   }
 
+  // 컨테이너로 스코핑하지 않고 문서 전체에서 이 조합으로 글 행을 바로 찾는다 - 오픈소스
+  // 아카라이브 확장 "Arca Refresher"(src/core/selector.jsx의 BOARD_ITEMS)가 실제로 쓰는
+  // 셀렉터를 그대로 따른 것이다. 처음엔 .list-table로 스코핑했는데, 페이지에 다른 목적의
+  // list-table(사이드바 위젯 등)이 더 있어서 엉뚱한 걸 잡아 실제 게시판에서 0건이
+  // 나오는 걸 실측으로 확인했다. 공지(.notice)와 헤더 행(.head)은 제외한다.
+  const BOARD_ITEMS_SELECTOR = ".vrow.column:not(.notice):not(.head), .vrow.hybrid";
+
   function parseListing(doc) {
-    const table = doc.querySelector(".list-table");
-    if (!table) return null;
     const articles = [];
-    for (const row of table.querySelectorAll(".vrow")) {
+    for (const row of doc.querySelectorAll(BOARD_ITEMS_SELECTOR)) {
       const article = parseRow(row);
       if (article) articles.push(article);
     }
@@ -128,9 +133,9 @@
       console.error(`${LOG_PREFIX} [${SITE}] fetch/parse failed:`, e);
       return;
     }
-    // 목록이 비어있거나 .list-table 자체가 없으면 대부분 Cloudflare 챌린지 페이지를
-    // 받은 것이다(cf_clearance 쿠키 만료 등) - 진짜 빈 목록으로 보내면 서버가 기존
-    // 추적 글을 전부 "계속 안 보임"으로 오판할 수 있으므로 이번 사이클은 그냥 건너뛴다.
+    // 글 행을 하나도 못 찾으면 대부분 Cloudflare 챌린지 페이지를 받았거나(cf_clearance
+    // 쿠키 만료 등) 셀렉터가 안 맞는 것이다 - 진짜 빈 목록으로 보내면 서버가 기존 추적
+    // 글을 전부 "계속 안 보임"으로 오판할 수 있으므로 이번 사이클은 그냥 건너뛴다.
     if (!articles || articles.length === 0) {
       console.warn(`${LOG_PREFIX} [${SITE}] listing empty/unparseable - Cloudflare challenge? skipping this cycle`);
       return;
