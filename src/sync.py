@@ -86,7 +86,7 @@ async def sync_site(
         try:
             await _process_article(
                 db, notifier, site, chat_id, crawl_config, article, existing, now,
-                known_max_id, silent_catchup,
+                known_max_id, silent_catchup, crawler=crawler,
             )
         except Exception:
             # 글 하나 처리(전송/수정 등)가 실패해도 이번 사이클의 나머지 글은 계속 처리한다.
@@ -139,6 +139,7 @@ async def _process_article(
     now: str,
     known_max_id: int | None,
     silent_catchup: bool,
+    crawler: BaseCrawler | None = None,
 ) -> None:
     if existing is None:
         # 게시글 번호는 사이트가 순차 발급하므로, 지금까지 관측한 최고 번호보다 작은
@@ -160,6 +161,14 @@ async def _process_article(
                     site, article.article_id, known_max_id,
                 )
             return
+        # 목록 자체엔 썸네일이 없는 사이트(쿨앤조이 등)는, 진짜 새 글로 확정된 지금
+        # 이 시점에만(매 사이클 전체 재확인이 아니라 딱 한 번) 상세 페이지를 추가로
+        # 요청해 이미지를 찾아온다 - 실패해도 텍스트 전송 자체는 막지 않는다.
+        if crawler is not None and not article.thumbnail_url:
+            try:
+                article.thumbnail_url = await crawler.fetch_thumbnail(article)
+            except Exception:
+                logger.warning("[%s] failed to fetch thumbnail for %s", site, article.article_id, exc_info=True)
         message_id, has_photo = await notifier.send(article, chat_id)
         await db.insert_article(article, chat_id, message_id, has_photo, now)
         logger.info("[%s] new article %s", site, article.article_id)

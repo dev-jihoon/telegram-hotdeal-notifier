@@ -42,6 +42,29 @@ class CoolenjoyCrawler(BaseCrawler):
             return True
         return status != 404
 
+    async def fetch_thumbnail(self, article: Article) -> str | None:
+        # 목록 페이지엔 썸네일이 아예 없어서, 신규 글로 확정된 시점에만(매 사이클 전체
+        # 재확인이 아니라 딱 한 번) 상세 페이지를 추가로 요청해 본문 첫 이미지를 가져온다.
+        try:
+            status, html = await _get(article.url)
+        except Exception:
+            return None
+        if status != 200:
+            return None
+        soup = BeautifulSoup(html, "lxml")
+        content = soup.select_one("#bo_v_con")
+        if content is None:
+            return None
+        img = content.select_one("img")
+        if img is None:
+            return None
+        src = img.get("data-src") or img.get("src")
+        if not src:
+            return None
+        # 본문 이미지는 파일명 앞에 "thumb-"가 붙은 축소판으로 삽입되는데, 그 접두사를
+        # 뗀 같은 경로에 원본 화질 파일이 그대로 존재한다(실측 확인).
+        return re.sub(r"/thumb-", "/", src)
+
 
 def _parse_listing(html: str) -> list[Article]:
     soup = BeautifulSoup(html, "lxml")

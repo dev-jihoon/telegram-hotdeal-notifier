@@ -28,6 +28,14 @@ class BaseCrawler(abc.ABC):
         """게시판 최신 글 목록을 가져온다."""
         ...
 
+    async def fetch_thumbnail(self, article: Article) -> str | None:
+        """목록에 썸네일이 없는 사이트가, 신규 글 전송 직전에 한해서만 상세 페이지를
+        추가로 요청해 이미지를 찾아올 때 오버라이드한다 (쿨앤조이 등 - 매 사이클 모든
+        추적 글을 재확인하는 게 아니라 딱 한 번, 진짜 새 글로 확정된 시점에만 호출된다).
+        기본 구현은 아무것도 안 한다.
+        """
+        return None
+
     async def check_exists(self, article_url: str) -> bool:
         """글이 아직 존재하는지 확인한다 (목록에서 사라진 글의 삭제 여부 판단용).
 
