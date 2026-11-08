@@ -8,3 +8,5 @@ docker-compose.yml
 .env
 *.pem
 extension/config.js
+# DB
+*.db
